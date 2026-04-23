@@ -1,0 +1,137 @@
+const orderService = require("../services/order.service");
+
+exports.getOrderListCustomer = async (req, res) => {
+  try {
+    const filter = {};
+    if (req.query.status) filter.status = req.query.status;
+    if (req.query.page) filter.page = req.query.page;
+    if (req.query.pageSize) filter.pageSize = req.query.pageSize;
+    const result = await orderService.getOrderListCustomer(req.user.id, filter);
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+};
+
+exports.getOrderListShop = async (req, res) => {
+  try {
+    const filter = {};
+    if (req.query.status) filter.status = req.query.status;
+    if (req.query.page) filter.page = req.query.page;
+    if (req.query.pageSize) filter.pageSize = req.query.pageSize;
+    const result = await orderService.getOrderListShop(filter);
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+};
+
+exports.getOrderDetail = async (req, res) => {
+  try {
+    const order = await orderService.getOrderDetail(req.params.id, req.user.id);
+    res.json({ order });
+  } catch (err) {
+    const statusCode =
+      err.message === "Bạn không có quyền xem đơn hàng này" ? 403 : 404;
+    res.status(statusCode).json({ message: err.message });
+  }
+};
+
+exports.checkout = async (req, res) => {
+  try {
+    const {
+      shipping_address,
+      phone,
+      order_type,
+      payment_method,
+      shipping_method,
+      items,
+      deposit_rate,
+      prescription_image,
+      optometrist_name,
+      clinic_name,
+    } = req.body;
+    const { order, payUrl } = await orderService.checkoutWithPayment(
+      req.user.id,
+      {
+        shipping_address,
+        phone,
+        order_type,
+        payment_method,
+        shipping_method,
+        items,
+        deposit_rate,
+        prescription_image,
+        optometrist_name,
+        clinic_name,
+      },
+    );
+    res.status(201).json({ message: "Đặt hàng thành công", order, payUrl });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+};
+
+exports.preorderNow = async (req, res) => {
+  try {
+    const {
+      shipping_address,
+      phone,
+      payment_method,
+      shipping_method,
+      items,
+      deposit_rate,
+    } = req.body;
+    const { order, payUrl } =
+      await orderService.createPreorderDirectWithPayment(req.user.id, {
+        shipping_address,
+        phone,
+        payment_method,
+        shipping_method,
+        items,
+        deposit_rate,
+      });
+    res
+      .status(201)
+      .json({ message: "Tạo đơn preorder thành công", order, payUrl });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+};
+
+exports.confirmOrder = async (req, res) => {
+  try {
+    const order = await orderService.confirmOrder(req.params.id, req.user.id);
+    res.json({ message: "Đã xác nhận đơn hàng", order });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+};
+
+exports.updateStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status, reason } = req.body || {};
+    const userRole = req.user.role;
+    const order = await orderService.updateOrderStatus(
+      id,
+      status,
+      userRole,
+      reason,
+    );
+    res.json({ message: "Cập nhật trạng thái thành công", order });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+};
+
+exports.cancelOrder = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body || {};
+    const order = await orderService.cancelOrder(id, req.user.id, reason);
+    res.json({ message: "Đã hủy đơn hàng", order });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+};
