@@ -1135,14 +1135,8 @@ function getOpenApiSpec() {
                         "return_requested",
                         "returned",
                         "refunded",
-                        "return_rejected",
                         "cancelled",
                       ],
-                    },
-                    reason: {
-                      type: "string",
-                      description:
-                        "Lý do từ chối trả hàng (bắt buộc khi status = return_rejected)",
                     },
                   },
                 },

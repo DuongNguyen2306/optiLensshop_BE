@@ -10,9 +10,28 @@ const momoService = require("./momo.service");
 const vnpayService = require("./vnpay.service");
 const { addressToString } = require("../utils/address");
 const { sanitizeLensParams } = require("../utils/lens-params");
+const User = require("../models/user.schema");
+const {
+  ORDER_STATUS,
+  ORDER_TRANSITIONS,
+  OPS_ONLY_STATUSES,
+} = require("../constants/order-status");
 
 function normalizePhone(phone) {
   return String(phone || "").trim();
+}
+
+/** Chuỗi id để so khớp cart line (ObjectId / ref đã populate / object có _id). */
+function refIdString(ref) {
+  if (ref == null) return "";
+  if (ref instanceof mongoose.Types.ObjectId) return ref.toString();
+  if (typeof ref === "string" || typeof ref === "number") {
+    return String(ref).trim();
+  }
+  if (typeof ref === "object" && ref._id != null) {
+    return String(ref._id);
+  }
+  return String(ref);
 }
 
 exports.getOrderListCustomer = async (userId, filter = {}) => {
@@ -559,8 +578,8 @@ exports.createOrderFromCart = async (userId, orderData) => {
       Array.isArray(orderData.items) && orderData.items.length
         ? orderData.items
         : cart.items.map((i) => ({
-            combo_id: i.combo_id ? i.combo_id.toString() : null,
-            variant_id: i.variant_id ? i.variant_id.toString() : null,
+            combo_id: i.combo_id ? refIdString(i.combo_id) : null,
+            variant_id: i.variant_id ? refIdString(i.variant_id) : null,
             quantity: i.quantity,
             lens_params: i.lens_params || null,
           }));
@@ -583,8 +602,10 @@ exports.createOrderFromCart = async (userId, orderData) => {
     if (order_type === "stock") {
       for (const sel of normalizedSelectedItems) {
         if (sel.combo_id) {
+          const selCombo = String(sel.combo_id).trim();
           const found = cart.items.find(
-            (i) => i.combo_id && i.combo_id.toString() === sel.combo_id,
+            (i) =>
+              i.combo_id && refIdString(i.combo_id) === selCombo,
           );
           const combo = found?.combo_id || null;
           const frame = combo?.frame_variant_id || null;
@@ -658,13 +679,15 @@ exports.createOrderFromCart = async (userId, orderData) => {
 
     for (const sel of normalizedSelectedItems) {
       if (sel.combo_id) {
+        const selCombo = String(sel.combo_id).trim();
         const found = cart.items.find(
-          (i) => i.combo_id && i.combo_id.toString() === sel.combo_id,
+          (i) =>
+            i.combo_id && refIdString(i.combo_id) === selCombo,
         );
         if (!found) throw new Error("Item combo trong cart không hợp lệ");
 
         const combo = await Combo.findOne({
-          _id: found.combo_id,
+          _id: refIdString(found.combo_id),
           is_active: true,
         }).session(session);
         if (!combo) throw new Error("Combo không còn hiệu lực");
@@ -721,14 +744,16 @@ exports.createOrderFromCart = async (userId, orderData) => {
         });
         total += (effectiveComboPrice || 0) * orderQty;
       } else {
+        const selVariant = String(sel.variant_id || "").trim();
         const found = cart.items.find(
-          (i) => i.variant_id && i.variant_id.toString() === sel.variant_id,
+          (i) =>
+            i.variant_id && refIdString(i.variant_id) === selVariant,
         );
         if (!found) throw new Error("Item trong cart không hợp lệ");
 
-        const variant = await ProductVariant.findById(found.variant_id).session(
-          session,
-        );
+        const variant = await ProductVariant.findById(
+          refIdString(found.variant_id),
+        ).session(session);
         if (!variant) throw new Error("Không tìm thấy biến thể sản phẩm");
 
         const orderQty = Number(sel.quantity ?? found.quantity);
@@ -957,10 +982,10 @@ exports.createOrderFromCart = async (userId, orderData) => {
       const plain = item.toObject ? item.toObject() : { ...item };
       const selected = normalizedSelectedItems.find((s) => {
         if (s.combo_id && plain.combo_id) {
-          return String(s.combo_id) === String(plain.combo_id);
+          return String(s.combo_id).trim() === refIdString(plain.combo_id);
         }
         if (s.variant_id && plain.variant_id) {
-          return String(s.variant_id) === String(plain.variant_id);
+          return String(s.variant_id).trim() === refIdString(plain.variant_id);
         }
         return false;
       });
@@ -1007,203 +1032,79 @@ exports.createOrderFromCart = async (userId, orderData) => {
   }
 };
 
-const STATE_TRANSITIONS = {
-  pending: ["confirmed", "cancelled"],
-  confirmed: ["processing", "cancelled"],
-  processing: ["manufacturing", "packed", "received", "shipped"],
-  manufacturing: ["packed"],
-  packed: ["shipped"],
-  shipped: ["delivered"],
-  delivered: ["completed", "return_requested"],
-  completed: [],
-  cancelled: [],
-  return_requested: ["returned", "refunded", "return_rejected"],
-  returned: [],
-  refunded: [],
-  return_rejected: [],
-  // Pre-order: hàng về kho
-  received: ["packed"],
-};
+function pushStatusHistory(order, action, actorId) {
+  order.status_history = Array.isArray(order.status_history)
+    ? order.status_history
+    : [];
+  order.status_history.push({
+    action,
+    actor: actorId || null,
+    at: new Date(),
+  });
+}
 
-exports.updateOrderStatus = async (orderId, newStatus, userRole, reason) => {
-  const order = await Order.findById(orderId);
-  if (!order) throw new Error("Không tìm thấy đơn hàng");
-  const previousStatus = order.status;
+function getTransitionMapByOrderType(orderType) {
+  return ORDER_TRANSITIONS[orderType] || ORDER_TRANSITIONS.stock;
+}
 
-  const baseTransitions = STATE_TRANSITIONS[order.status] || [];
-  let allowedTransitions = [];
-
-  if (order.order_type === "prescription") {
-    allowedTransitions =
-      order.status === "processing"
-        ? baseTransitions.includes("manufacturing")
-          ? ["manufacturing"]
-          : []
-        : baseTransitions;
-  } else if (order.order_type === "pre_order") {
-    allowedTransitions =
-      order.status === "processing"
-        ? baseTransitions.includes("received")
-          ? ["received"]
-          : []
-        : baseTransitions.filter((s) => s !== "manufacturing");
-  } else {
-    allowedTransitions = baseTransitions.filter(
-      (s) => s !== "manufacturing" && s !== "received",
-    );
-  }
-
-  if (!allowedTransitions.includes(newStatus)) {
-    const msg = allowedTransitions.length
-      ? `Không thể chuyển từ "${order.status}" sang "${newStatus}". Các trạng thái hợp lệ: ${allowedTransitions.join(", ")}`
+function assertCanTransition(order, nextStatus) {
+  const map = getTransitionMapByOrderType(order.order_type);
+  const allowed = map[order.status] || [];
+  if (!allowed.includes(nextStatus)) {
+    const msg = allowed.length
+      ? `Không thể chuyển từ "${order.status}" sang "${nextStatus}". Các trạng thái hợp lệ: ${allowed.join(", ")}`
       : `Không thể chuyển từ "${order.status}" — đơn hàng đã ở trạng thái cuối`;
     throw new Error(msg);
   }
+}
 
-  // 🔒 Role-based: chỉ operations được cập nhật các trạng thái vận hành
-  const OPS_ONLY_STATUSES = [
-    "processing",
-    "manufacturing",
-    "received",
-    "packed",
-    "shipped",
-    "delivered",
-  ];
-  if (OPS_ONLY_STATUSES.includes(newStatus) && userRole !== "operations") {
+async function deductStockIfNeededOnShipped(order) {
+  if (order.status !== ORDER_STATUS.SHIPPED) return;
+  if (order.stock_deducted_at) return;
+
+  const items = await OrderItem.find({ order_id: order._id }).select(
+    "variant_id quantity",
+  );
+  const qtyMap = new Map();
+  for (const item of items) {
+    const key = String(item.variant_id);
+    qtyMap.set(key, (qtyMap.get(key) || 0) + Number(item.quantity || 0));
+  }
+
+  for (const [variantId, qty] of qtyMap.entries()) {
+    const result = await ProductVariant.updateOne(
+      { _id: variantId, stock_quantity: { $gte: qty } },
+      { $inc: { stock_quantity: -qty } },
+    );
+    if (result.modifiedCount === 0) {
+      throw new Error(`Không đủ stock_quantity để trừ cho biến thể ${variantId}`);
+    }
+  }
+
+  order.stock_deducted_at = new Date();
+}
+
+exports.updateOrderStatus = async (orderId, newStatus, userRole, actorId = null) => {
+  const order = await Order.findById(orderId);
+  if (!order) throw new Error("Không tìm thấy đơn hàng");
+
+  const normalizedStatus = String(newStatus || "").trim().toLowerCase();
+  if (!Object.values(ORDER_STATUS).includes(normalizedStatus)) {
+    throw new Error("Trạng thái đơn hàng không hợp lệ");
+  }
+  if (order.status === ORDER_STATUS.CANCELLED) {
+    throw new Error("Đơn đã hủy, không thể cập nhật trạng thái");
+  }
+
+  if (OPS_ONLY_STATUSES.includes(normalizedStatus) && userRole !== "operations") {
     throw new Error("Chỉ nhân viên operations được cập nhật trạng thái này");
   }
 
-  // ✅ Transition hợp lệ → cập nhật
-  order.status = newStatus;
-  if (newStatus === "return_rejected") {
-    const rejectReason = String(reason || "").trim();
-    if (!rejectReason) {
-      throw new Error("Vui lòng nhập lý do từ chối trả hàng");
-    }
-    order.return_reject_reason = rejectReason;
-  }
-
-  const ProductVariant = require("../models/productVariant.schema");
-
-  if (newStatus === "received") {
-    if (order.order_type === "pre_order") {
-      const items = await OrderItem.find({ order_id: orderId });
-      const qtyMap = new Map();
-
-      for (const item of items) {
-        const key = item.variant_id.toString();
-        qtyMap.set(key, (qtyMap.get(key) || 0) + Number(item.quantity || 0));
-      }
-
-      for (const [variantId, qty] of qtyMap.entries()) {
-        const reservedResult = await ProductVariant.updateOne(
-          { _id: variantId, reserved_quantity: { $gte: qty } },
-          { $inc: { reserved_quantity: -qty } },
-        );
-        if (reservedResult.modifiedCount === 0) {
-          throw new Error(
-            `Không đủ reserved_quantity để trừ cho biến thể ${variantId}`,
-          );
-        }
-        await ProductVariant.updateOne(
-          { _id: variantId },
-          { $inc: { stock_quantity: qty } },
-        );
-      }
-    }
-  }
-
-  if (newStatus === "packed") {
-    const isPreOrderNotReceived =
-      order.order_type === "pre_order" && previousStatus !== "received";
-
-    if (!isPreOrderNotReceived) {
-      const items = await OrderItem.find({ order_id: orderId });
-
-      for (const item of items) {
-        if (order.order_type === "prescription") {
-          if (item.item_type !== "lens") {
-            const quantity = Number(item.quantity);
-            const reservedResult = await ProductVariant.updateOne(
-              { _id: item.variant_id, reserved_quantity: { $gte: quantity } },
-              { $inc: { reserved_quantity: -quantity } },
-            );
-            if (reservedResult.modifiedCount === 0) {
-              throw new Error(
-                `Không đủ reserved_quantity để trừ cho biến thể ${item.variant_id}`,
-              );
-            }
-
-            const stockResult = await ProductVariant.updateOne(
-              { _id: item.variant_id, stock_quantity: { $gte: quantity } },
-              { $inc: { stock_quantity: -quantity } },
-            );
-            if (stockResult.modifiedCount === 0) {
-              throw new Error(
-                `Không đủ stock_quantity để trừ cho biến thể ${item.variant_id}`,
-              );
-            }
-          }
-        } else {
-          if (order.order_type !== "pre_order") {
-            const quantity = Number(item.quantity);
-            const reservedResult = await ProductVariant.updateOne(
-              { _id: item.variant_id, reserved_quantity: { $gte: quantity } },
-              { $inc: { reserved_quantity: -quantity } },
-            );
-            if (reservedResult.modifiedCount === 0) {
-              throw new Error(
-                `Không đủ reserved_quantity để trừ cho biến thể ${item.variant_id}`,
-              );
-            }
-          }
-          const quantity = Number(item.quantity);
-          const stockResult = await ProductVariant.updateOne(
-            { _id: item.variant_id, stock_quantity: { $gte: quantity } },
-            { $inc: { stock_quantity: -quantity } },
-          );
-          if (stockResult.modifiedCount === 0) {
-            throw new Error(
-              `Không đủ stock_quantity để trừ cho biến thể ${item.variant_id}`,
-            );
-          }
-        }
-      }
-    }
-  }
-
-  if (newStatus === "manufacturing") {
-    if (order.order_type === "prescription") {
-      const items = await OrderItem.find({ order_id: orderId });
-
-      for (const item of items) {
-        if (item.item_type === "lens") {
-          const quantity = Number(item.quantity);
-          const reservedResult = await ProductVariant.updateOne(
-            { _id: item.variant_id, reserved_quantity: { $gte: quantity } },
-            { $inc: { reserved_quantity: -quantity } },
-          );
-          if (reservedResult.modifiedCount === 0) {
-            throw new Error(
-              `Không đủ reserved_quantity để trừ cho biến thể ${item.variant_id}`,
-            );
-          }
-
-          const stockResult = await ProductVariant.updateOne(
-            { _id: item.variant_id, stock_quantity: { $gte: quantity } },
-            { $inc: { stock_quantity: -quantity } },
-          );
-          if (stockResult.modifiedCount === 0) {
-            throw new Error(
-              `Không đủ stock_quantity để trừ cho biến thể ${item.variant_id}`,
-            );
-          }
-        }
-      }
-    }
-  }
-
-  if (newStatus === "delivered") {
+  assertCanTransition(order, normalizedStatus);
+  order.status = normalizedStatus;
+  if (normalizedStatus === ORDER_STATUS.PACKED) order.fulfilled_at = new Date();
+  await deductStockIfNeededOnShipped(order);
+  if (normalizedStatus === ORDER_STATUS.DELIVERED) {
     const payment = await Payment.findOne({ order_id: orderId, method: "cod" });
     if (payment && payment.status !== "paid") {
       payment.status = "paid";
@@ -1211,95 +1112,27 @@ exports.updateOrderStatus = async (orderId, newStatus, userRole, reason) => {
       await payment.save();
     }
   }
-
-  if (newStatus === "returned" || newStatus === "cancelled") {
-    const items = await OrderItem.find({ order_id: orderId });
-    const qtyMap = new Map();
-
-    for (const item of items) {
-      const key = item.variant_id.toString();
-      qtyMap.set(key, (qtyMap.get(key) || 0) + Number(item.quantity || 0));
-    }
-
-    if (newStatus === "cancelled") {
-      for (const [variantId, qty] of qtyMap.entries()) {
-        const reservedResult = await ProductVariant.updateOne(
-          { _id: variantId, reserved_quantity: { $gte: qty } },
-          { $inc: { reserved_quantity: -qty } },
-        );
-        if (reservedResult.modifiedCount === 0) {
-          throw new Error(
-            `Không đủ reserved_quantity để trừ cho biến thể ${variantId}`,
-          );
-        }
-      }
-    } else if (newStatus === "returned") {
-      for (const [variantId, qty] of qtyMap.entries()) {
-        await ProductVariant.updateOne(
-          { _id: variantId },
-          { $inc: { stock_quantity: qty } },
-        );
-      }
-
-      const payment = await Payment.findOne({
-        order_id: orderId,
-        method: "cod",
-      });
-      if (payment && payment.status !== "failed") {
-        payment.status = "failed";
-        await payment.save();
-      }
-    }
-  }
-
+  pushStatusHistory(order, normalizedStatus.toUpperCase(), actorId);
   await order.save();
   return order;
 };
 
-exports.confirmOrder = async (orderId, user) => {
+exports.confirmOrder = async (orderId, userId) => {
   const order = await Order.findById(orderId);
   if (!order) throw new Error("Không tìm thấy đơn hàng");
-
-  const baseTransitions = STATE_TRANSITIONS[order.status] || [];
-  let allowedTransitions = [];
-
-  if (order.order_type === "prescription") {
-    allowedTransitions =
-      order.status === "processing"
-        ? baseTransitions.includes("manufacturing")
-          ? ["manufacturing"]
-          : []
-        : baseTransitions;
-  } else if (order.order_type === "pre_order") {
-    allowedTransitions =
-      order.status === "processing"
-        ? baseTransitions.includes("received")
-          ? ["received"]
-          : []
-        : baseTransitions.filter((s) => s !== "manufacturing");
-  } else {
-    allowedTransitions = baseTransitions.filter(
-      (s) => s !== "manufacturing" && s !== "received",
-    );
+  if (order.status === ORDER_STATUS.CANCELLED) {
+    throw new Error("Đơn đã hủy, không thể xác nhận");
   }
 
-  if (
-    !allowedTransitions.includes("confirmed") &&
-    !allowedTransitions.includes("cancelled")
-  ) {
-    throw new Error("Trạng thái hiện tại không cho phép xác nhận hoặc hủy đơn");
-  }
-  if (user.role !== "sales")
+  const user = await User.findById(userId);
+  if (!user) throw new Error("Không tìm thấy người dùng");
+  if (user.role !== "sales") {
     throw new Error("Chỉ nhân viên sale được xác nhận đơn");
-
-  if (user.reject === true || user.reject === "true") {
-    order.status = "cancelled";
-    if (user.reject_reason) order.reject_reason = user.reject_reason;
-    await order.save();
-    return order;
   }
 
-  order.status = "confirmed";
+  assertCanTransition(order, ORDER_STATUS.CONFIRMED);
+  order.status = ORDER_STATUS.CONFIRMED;
+  pushStatusHistory(order, ORDER_STATUS.CONFIRMED.toUpperCase(), userId);
   await order.save();
   return order;
 };
@@ -1308,64 +1141,17 @@ exports.cancelOrder = async (orderId, userId, reason) => {
   const order = await Order.findById(orderId);
   if (!order) throw new Error("Không tìm thấy đơn hàng");
 
-  // Chỉ chủ đơn mới được hủy
   if (order.user_id.toString() !== userId.toString()) {
     throw new Error("Bạn không có quyền hủy đơn hàng này");
   }
-
-  const baseTransitions = STATE_TRANSITIONS[order.status] || [];
-  let allowedTransitions = [];
-
-  if (order.order_type === "prescription") {
-    allowedTransitions =
-      order.status === "processing"
-        ? baseTransitions.includes("manufacturing")
-          ? ["manufacturing"]
-          : []
-        : baseTransitions;
-  } else if (order.order_type === "pre_order") {
-    allowedTransitions =
-      order.status === "processing"
-        ? baseTransitions.includes("received")
-          ? ["received"]
-          : []
-        : baseTransitions.filter((s) => s !== "manufacturing");
-  } else {
-    allowedTransitions = baseTransitions.filter(
-      (s) => s !== "manufacturing" && s !== "received",
-    );
+  if (order.status === ORDER_STATUS.CANCELLED) {
+    throw new Error("Đơn hàng đã hủy trước đó");
   }
 
-  if (!allowedTransitions.includes("cancelled")) {
-    throw new Error(`Không thể hủy đơn ở trạng thái "${order.status}"`);
-  }
-
-  order.status = "cancelled";
+  assertCanTransition(order, ORDER_STATUS.CANCELLED);
+  order.status = ORDER_STATUS.CANCELLED;
   if (reason) order.cancel_reason = reason;
-
-  if (["stock", "pre_order", "prescription"].includes(order.order_type)) {
-    const ProductVariant = require("../models/productVariant.schema");
-    const items = await OrderItem.find({ order_id: orderId });
-    const qtyMap = new Map();
-
-    for (const item of items) {
-      const key = item.variant_id.toString();
-      qtyMap.set(key, (qtyMap.get(key) || 0) + Number(item.quantity || 0));
-    }
-
-    for (const [variantId, qty] of qtyMap.entries()) {
-      const reservedResult = await ProductVariant.updateOne(
-        { _id: variantId, reserved_quantity: { $gte: qty } },
-        { $inc: { reserved_quantity: -qty } },
-      );
-      if (reservedResult.modifiedCount === 0) {
-        throw new Error(
-          `Không đủ reserved_quantity để trừ cho biến thể ${variantId}`,
-        );
-      }
-    }
-  }
-
+  pushStatusHistory(order, ORDER_STATUS.CANCELLED.toUpperCase(), userId);
   await order.save();
   return order;
 };
