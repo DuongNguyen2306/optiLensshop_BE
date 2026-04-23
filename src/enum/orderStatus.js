@@ -11,6 +11,5 @@ exports.ORDER_STATUS = {
   RETURN_REQUESTED: "return_requested",
   RETURNED: "returned",
   REFUNDED: "refunded",
-  RETURN_REJECTED: "return_rejected",
   RECEIVED: "received",
 };

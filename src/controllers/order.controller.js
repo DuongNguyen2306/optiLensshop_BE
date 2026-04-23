@@ -1,4 +1,5 @@
 const orderService = require("../services/order.service");
+const opsOrderService = require("../services/ops-order.service");
 
 exports.getOrderListCustomer = async (req, res) => {
   try {
@@ -111,13 +112,13 @@ exports.confirmOrder = async (req, res) => {
 exports.updateStatus = async (req, res) => {
   try {
     const { id } = req.params;
-    const { status, reason } = req.body || {};
+    const { status } = req.body;
     const userRole = req.user.role;
     const order = await orderService.updateOrderStatus(
       id,
       status,
       userRole,
-      reason,
+      req.user.id,
     );
     res.json({ message: "Cập nhật trạng thái thành công", order });
   } catch (err) {
@@ -131,6 +132,55 @@ exports.cancelOrder = async (req, res) => {
     const { reason } = req.body || {};
     const order = await orderService.cancelOrder(id, req.user.id, reason);
     res.json({ message: "Đã hủy đơn hàng", order });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+};
+
+exports.getOpsOrders = async (req, res) => {
+  try {
+    const filter = {};
+    if (req.query.status) filter.status = req.query.status;
+    if (req.query.page) filter.page = req.query.page;
+    if (req.query.pageSize) filter.pageSize = req.query.pageSize;
+    const result = await opsOrderService.getOpsOrders(filter);
+    res.status(200).json(result);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+};
+
+exports.startProcessing = async (req, res) => {
+  try {
+    const order = await opsOrderService.startProcessing(req.params.id, req.user.id);
+    res.status(200).json({ message: "Ops bắt đầu gia công", order });
+  } catch (err) {
+    res.status(err.statusCode || 400).json({ message: err.message });
+  }
+};
+
+exports.fulfillOrder = async (req, res) => {
+  try {
+    const order = await opsOrderService.fulfillOrder(req.params.id, req.user.id);
+    res.status(200).json({ message: "Ops hoàn tất gia công", order });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+};
+
+exports.startShipping = async (req, res) => {
+  try {
+    const order = await opsOrderService.startShipping(req.params.id, req.user.id);
+    res.status(200).json({ message: "Bàn giao đơn cho shipper", order });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+};
+
+exports.markDelivered = async (req, res) => {
+  try {
+    const order = await opsOrderService.markDelivered(req.params.id, req.user.id);
+    res.status(200).json({ message: "Đã giao thành công", order });
   } catch (err) {
     res.status(400).json({ message: err.message });
   }
