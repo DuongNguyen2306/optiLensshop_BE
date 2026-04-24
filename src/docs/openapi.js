@@ -1680,28 +1680,6 @@ function getOpenApiSpec() {
           responses: { 200: { description: "OK" } },
         },
       },
-      "/orders/{id}/report-not-received": {
-        put: {
-          tags: ["Orders"],
-          security: [{ bearerAuth: [] }],
-          summary:
-            "Customer báo chưa nhận được hàng (delivered -> return_requested)",
-          parameters: [objectIdParam("id", "Order ID")],
-          requestBody: {
-            content: {
-              "application/json": {
-                schema: {
-                  type: "object",
-                  properties: {
-                    reason: { type: "string" },
-                  },
-                },
-              },
-            },
-          },
-          responses: { 200: { description: "OK" } },
-        },
-      },
       "/orders/{id}/status": {
         put: {
           tags: ["Orders"],
@@ -2424,31 +2402,6 @@ function getOpenApiSpec() {
           tags: ["Inventory"],
           security: [{ bearerAuth: [] }],
           summary: "Sổ kho (inventory ledger)",
-          responses: { 200: { description: "OK" } },
-        },
-      },
-      "/api/ops/orders/{id}/not-received/resolve": {
-        patch: {
-          tags: ["Orders"],
-          security: [{ bearerAuth: [] }],
-          summary:
-            "Ops/Manager/Admin xử lý báo chưa nhận được hàng (reship hoặc refund)",
-          parameters: [objectIdParam("id", "Order ID")],
-          requestBody: {
-            required: true,
-            content: {
-              "application/json": {
-                schema: {
-                  type: "object",
-                  required: ["action"],
-                  properties: {
-                    action: { type: "string", enum: ["reship", "refund"] },
-                    note: { type: "string" },
-                  },
-                },
-              },
-            },
-          },
           responses: { 200: { description: "OK" } },
         },
       },

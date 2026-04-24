@@ -1277,28 +1277,3 @@ exports.confirmReceivedByCustomer = async (orderId, userId) => {
   return order;
 };
 
-exports.reportNotReceivedByCustomer = async (orderId, userId, reason) => {
-  const order = await Order.findById(orderId);
-  if (!order) throw new Error("Không tìm thấy đơn hàng");
-
-  if (order.user_id.toString() !== userId.toString()) {
-    throw new Error("Bạn không có quyền báo sự cố cho đơn hàng này");
-  }
-
-  if (order.status === ORDER_STATUS.CANCELLED) {
-    throw new Error("Đơn đã hủy, không thể báo chưa nhận được");
-  }
-
-  if (order.status !== ORDER_STATUS.DELIVERED) {
-    throw new Error("Chỉ có thể báo chưa nhận được khi đơn ở trạng thái delivered");
-  }
-
-  assertCanTransition(order, ORDER_STATUS.RETURN_REQUESTED);
-  order.status = ORDER_STATUS.RETURN_REQUESTED;
-  if (reason) {
-    order.reject_reason = String(reason).trim();
-  }
-  pushStatusHistory(order, "NOT_RECEIVED_REPORTED", userId);
-  await order.save();
-  return order;
-};
