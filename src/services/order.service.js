@@ -11,6 +11,7 @@ const vnpayService = require("./vnpay.service");
 const { addressToString } = require("../utils/address");
 const { sanitizeLensParams } = require("../utils/lens-params");
 const User = require("../models/user.schema");
+const { getPreorderDepositRate } = require("./systemSetting.service");
 const {
   ORDER_STATUS,
   ORDER_TRANSITIONS,
@@ -424,7 +425,7 @@ exports.createPreorderDirect = async (userId, orderData) => {
     }
 
     const final_amount = total + shipping_fee;
-    const envDepositRate = Number(process.env.PREORDER_DEPOSIT_RATE || 0.3);
+    const envDepositRate = await getPreorderDepositRate();
     const depositRate = Math.min(
       1,
       Math.max(0, Number(orderData.deposit_rate ?? envDepositRate) || 0),
@@ -825,7 +826,7 @@ exports.createOrderFromCart = async (userId, orderData) => {
     }
 
     const final_amount = total + shipping_fee;
-    const envDepositRate = Number(process.env.PREORDER_DEPOSIT_RATE || 0.3);
+    const envDepositRate = await getPreorderDepositRate();
     const depositRate = Math.min(
       1,
       Math.max(0, Number(orderData.deposit_rate ?? envDepositRate) || 0),
@@ -1099,6 +1100,11 @@ exports.updateOrderStatus = async (orderId, newStatus, userRole, actorId = null)
   if (OPS_ONLY_STATUSES.includes(normalizedStatus) && userRole !== "operations") {
     throw new Error("Chỉ nhân viên operations được cập nhật trạng thái này");
   }
+  if (userRole === "operations" && normalizedStatus === ORDER_STATUS.COMPLETED) {
+    throw new Error(
+      "Operations khong duoc cap nhat completed. Khach hang xac nhan da nhan hang moi duoc hoan tat don.",
+    );
+  }
 
   assertCanTransition(order, normalizedStatus);
   order.status = normalizedStatus;
@@ -1152,6 +1158,55 @@ exports.cancelOrder = async (orderId, userId, reason) => {
   order.status = ORDER_STATUS.CANCELLED;
   if (reason) order.cancel_reason = reason;
   pushStatusHistory(order, ORDER_STATUS.CANCELLED.toUpperCase(), userId);
+  await order.save();
+  return order;
+};
+
+exports.confirmReceivedByCustomer = async (orderId, userId) => {
+  const order = await Order.findById(orderId);
+  if (!order) throw new Error("Không tìm thấy đơn hàng");
+
+  if (order.user_id.toString() !== userId.toString()) {
+    throw new Error("Bạn không có quyền xác nhận đơn hàng này");
+  }
+
+  if (order.status === ORDER_STATUS.CANCELLED) {
+    throw new Error("Đơn đã hủy, không thể xác nhận đã nhận");
+  }
+
+  if (order.status !== ORDER_STATUS.DELIVERED) {
+    throw new Error("Chỉ có thể xác nhận khi đơn đang ở trạng thái delivered");
+  }
+
+  assertCanTransition(order, ORDER_STATUS.COMPLETED);
+  order.status = ORDER_STATUS.COMPLETED;
+  pushStatusHistory(order, ORDER_STATUS.COMPLETED.toUpperCase(), userId);
+  await order.save();
+  return order;
+};
+
+exports.reportNotReceivedByCustomer = async (orderId, userId, reason) => {
+  const order = await Order.findById(orderId);
+  if (!order) throw new Error("Không tìm thấy đơn hàng");
+
+  if (order.user_id.toString() !== userId.toString()) {
+    throw new Error("Bạn không có quyền báo sự cố cho đơn hàng này");
+  }
+
+  if (order.status === ORDER_STATUS.CANCELLED) {
+    throw new Error("Đơn đã hủy, không thể báo chưa nhận được");
+  }
+
+  if (order.status !== ORDER_STATUS.DELIVERED) {
+    throw new Error("Chỉ có thể báo chưa nhận được khi đơn ở trạng thái delivered");
+  }
+
+  assertCanTransition(order, ORDER_STATUS.RETURN_REQUESTED);
+  order.status = ORDER_STATUS.RETURN_REQUESTED;
+  if (reason) {
+    order.reject_reason = String(reason).trim();
+  }
+  pushStatusHistory(order, "NOT_RECEIVED_REPORTED", userId);
   await order.save();
   return order;
 };

@@ -137,6 +137,32 @@ exports.cancelOrder = async (req, res) => {
   }
 };
 
+exports.confirmReceived = async (req, res) => {
+  try {
+    const order = await orderService.confirmReceivedByCustomer(
+      req.params.id,
+      req.user.id,
+    );
+    res.json({ message: "Đã xác nhận đã nhận hàng", order });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+};
+
+exports.reportNotReceived = async (req, res) => {
+  try {
+    const { reason } = req.body || {};
+    const order = await orderService.reportNotReceivedByCustomer(
+      req.params.id,
+      req.user.id,
+      reason,
+    );
+    res.json({ message: "Đã ghi nhận báo cáo chưa nhận được hàng", order });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+};
+
 exports.getOpsOrders = async (req, res) => {
   try {
     const filter = {};
@@ -181,6 +207,21 @@ exports.markDelivered = async (req, res) => {
   try {
     const order = await opsOrderService.markDelivered(req.params.id, req.user.id);
     res.status(200).json({ message: "Đã giao thành công", order });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+};
+
+exports.resolveNotReceived = async (req, res) => {
+  try {
+    const { action, note } = req.body || {};
+    const order = await opsOrderService.resolveNotReceived(
+      req.params.id,
+      req.user.id,
+      action,
+      note,
+    );
+    res.status(200).json({ message: "Đã xử lý báo cáo chưa nhận được hàng", order });
   } catch (err) {
     res.status(400).json({ message: err.message });
   }

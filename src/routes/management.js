@@ -1,5 +1,6 @@
 const express = require("express");
 const userController = require("../controllers/user.controller");
+const systemSettingController = require("../controllers/systemSetting.controller");
 const { authenticate, authorize } = require("../middlewares/auth.middleware");
 
 const router = express.Router();
@@ -54,6 +55,19 @@ router.delete(
   authenticate,
   authorize(["admin"]),
   userController.deleteManager,
+);
+
+router.get(
+  "/settings/preorder-deposit-rate",
+  authenticate,
+  authorize(["manager", "admin"]),
+  systemSettingController.getPreorderDepositRate,
+);
+router.put(
+  "/settings/preorder-deposit-rate",
+  authenticate,
+  authorize(["manager", "admin"]),
+  systemSettingController.updatePreorderDepositRate,
 );
 
 module.exports = router;

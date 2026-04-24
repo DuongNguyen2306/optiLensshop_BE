@@ -263,11 +263,54 @@ async function markDelivered(orderId, opsUserId) {
   return order;
 }
 
+async function resolveNotReceived(orderId, opsUserId, action, note) {
+  if (!mongoose.Types.ObjectId.isValid(orderId)) {
+    throw new Error("order id không hợp lệ");
+  }
+
+  const normalizedAction = String(action || "")
+    .trim()
+    .toLowerCase();
+  if (!["reship", "refund"].includes(normalizedAction)) {
+    throw new Error("action không hợp lệ, chỉ chấp nhận reship hoặc refund");
+  }
+
+  const order = await Order.findById(orderId);
+  if (!order) throw new Error("Không tìm thấy đơn hàng");
+  if (order.status !== ORDER_STATUS.RETURN_REQUESTED) {
+    throw new Error(
+      "Chỉ đơn RETURN_REQUESTED mới có thể xử lý báo cáo chưa nhận được",
+    );
+  }
+
+  if (normalizedAction === "reship") {
+    order.status = ORDER_STATUS.SHIPPED;
+    if (note) order.reject_reason = String(note).trim();
+    pushStatusHistory(order, "NOT_RECEIVED_RESOLVED_RESHIP", opsUserId);
+    await order.save();
+    return order;
+  }
+
+  order.status = ORDER_STATUS.REFUNDED;
+  if (note) order.reject_reason = String(note).trim();
+  pushStatusHistory(order, "NOT_RECEIVED_RESOLVED_REFUND", opsUserId);
+  await order.save();
+
+  const payment = await Payment.findOne({ order_id: orderId });
+  if (payment && payment.status !== "refunded") {
+    payment.status = "refunded";
+    await payment.save();
+  }
+
+  return order;
+}
+
 module.exports = {
   getOpsOrders,
   startProcessing,
   fulfillOrder,
   startShipping,
   markDelivered,
+  resolveNotReceived,
 };
 
