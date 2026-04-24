@@ -38,12 +38,6 @@ router.patch(
   authMiddleware.authorize(["operations", "manager", "admin"]),
   orderController.markDelivered,
 );
-router.patch(
-  "/:id/not-received/resolve",
-  authMiddleware.authenticate,
-  authMiddleware.authorize(["operations", "manager", "admin"]),
-  orderController.resolveNotReceived,
-);
 
 module.exports = router;
 

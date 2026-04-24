@@ -58,12 +58,6 @@ router.put(
   authMiddleware.authorize(["customer"]),
   orderController.confirmReceived,
 );
-router.put(
-  "/:id/report-not-received",
-  authMiddleware.authenticate,
-  authMiddleware.authorize(["customer"]),
-  orderController.reportNotReceived,
-);
 
 router.put(
   "/:id/status",
