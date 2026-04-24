@@ -17,6 +17,7 @@ const inventoryLedgerSchema = new Schema(
         "order_reserve",
         "order_release",
         "order_deduct",
+        "return_restock",
       ],
       required: true,
       index: true,
@@ -29,7 +30,7 @@ const inventoryLedgerSchema = new Schema(
     note: { type: String, default: "" },
     ref_type: {
       type: String,
-      enum: ["inventory_receipt", "order", "cart", "manual", null],
+      enum: ["inventory_receipt", "order", "cart", "manual", "return_request", null],
       default: null,
     },
     ref_id: { type: Schema.Types.ObjectId, default: null },

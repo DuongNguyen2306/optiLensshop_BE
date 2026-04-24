@@ -59,4 +59,17 @@ router.put(
   orderController.updateStatus,
 );
 
+/**
+ * PATCH /orders/:id/shipping-info
+ * Sales / Ops / Manager / Admin nhập đơn vị vận chuyển và mã vận đơn.
+ * Cho phép khi đơn ở trạng thái: confirmed, packed, shipped, completed.
+ * Body: { shipping_carrier?, tracking_code? }
+ */
+router.patch(
+  "/:id/shipping-info",
+  authMiddleware.authenticate,
+  authMiddleware.authorize(["sales", "operations", "manager", "admin"]),
+  orderController.updateShippingInfo,
+);
+
 module.exports = router;

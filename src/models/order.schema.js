@@ -88,6 +88,10 @@ const orderSchema = new Schema(
     cancel_reason: { type: String },
     reject_reason: { type: String },
 
+    /** Thông tin vận chuyển — do Sales/Ops nhập khi đóng gói / giao hàng */
+    shipping_carrier: { type: String, trim: true, default: null },
+    tracking_code: { type: String, trim: true, default: null },
+
     created_at: { type: Date, default: Date.now },
   },
   {

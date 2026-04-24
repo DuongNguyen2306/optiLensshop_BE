@@ -37,12 +37,30 @@ exports.getOrderListShop = async (req, res) => {
 
 exports.getOrderDetail = async (req, res) => {
   try {
-    const order = await orderService.getOrderDetail(req.params.id, req.user.id);
+    const order = await orderService.getOrderDetail(
+      req.params.id,
+      req.user._id ?? req.user.id,
+      req.user.role,
+    );
     res.json({ order });
   } catch (err) {
     const statusCode =
       err.message === "Bạn không có quyền xem đơn hàng này" ? 403 : 404;
     res.status(statusCode).json({ message: err.message });
+  }
+};
+
+exports.updateShippingInfo = async (req, res) => {
+  try {
+    const { shipping_carrier, tracking_code } = req.body;
+    const order = await orderService.updateShippingInfo(
+      req.params.id,
+      { shipping_carrier, tracking_code },
+      req.user._id ?? req.user.id,
+    );
+    res.json({ message: "Đã lưu thông tin vận chuyển", order });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
   }
 };
 

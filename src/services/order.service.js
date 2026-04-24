@@ -115,28 +115,97 @@ exports.getOrderListShop = async (filter = {}) => {
   };
 };
 
-exports.getOrderDetail = async (orderId, userId) => {
-  const order = await Order.findById(orderId);
-  if (!order) throw new AppError("Không tìm thấy đơn hàng", 404);
+const STAFF_ROLES = ["sales", "operations", "manager", "admin"];
 
-  if (order.user_id.toString() !== userId.toString()) {
-    throw new AppError("Bạn không có quyền xem đơn hàng này", 403);
+/**
+ * @param {string} orderId
+ * @param {string} userId  — ID của người gọi (dùng kiểm tra ownership cho customer)
+ * @param {string} [userRole] — Nếu là staff role thì bỏ qua kiểm tra ownership
+ */
+exports.getOrderDetail = async (orderId, userId, userRole) => {
+  const order = await Order.findById(orderId);
+  if (!order) throw new Error("Không tìm thấy đơn hàng");
+
+  const isStaff = userRole && STAFF_ROLES.includes(userRole);
+
+  if (!isStaff && order.user_id.toString() !== userId.toString()) {
+    throw new Error("Bạn không có quyền xem đơn hàng này");
   }
 
   const [items, payment, prescriptions] = await Promise.all([
-    OrderItem.find({ order_id: orderId }),
-    Payment.findOne({ order_id: orderId }),
+    OrderItem.find({ order_id: orderId })
+      .populate({
+        path: "variant_id",
+        select: "sku price images color size diameter base_curve power product_id",
+        populate: {
+          path: "product_id",
+          select: "name type images slug",
+        },
+      })
+      .lean(),
+    Payment.findOne({ order_id: orderId }).lean(),
     order.order_type === "prescription"
-      ? PrescriptionOrder.find({ order_id: orderId })
+      ? PrescriptionOrder.find({ order_id: orderId }).lean()
       : Promise.resolve(null),
   ]);
 
+  // Gắn product_name và images lên từng item để FE dùng tiện
+  const enrichedItems = items.map((item) => {
+    const variant = item.variant_id || {};
+    const product = variant.product_id || {};
+    return {
+      ...item,
+      product_name: product.name || null,
+      product_type: product.type || null,
+      product_slug: product.slug || null,
+      // Ưu tiên ảnh variant, fallback sang ảnh product
+      images:
+        Array.isArray(variant.images) && variant.images.length > 0
+          ? variant.images
+          : Array.isArray(product.images)
+            ? product.images
+            : [],
+    };
+  });
+
   return {
     ...order.toObject(),
-    items,
+    items: enrichedItems,
     payment,
     prescriptions,
   };
+};
+
+/**
+ * Sales/Ops cập nhật thông tin vận chuyển (đơn vị vận chuyển + mã vận đơn).
+ * Cho phép khi đơn ở trạng thái: confirmed, packed, shipped, completed.
+ */
+const SHIPPING_INFO_ALLOWED_STATUSES = ["confirmed", "packed", "shipped", "completed"];
+
+exports.updateShippingInfo = async (orderId, { shipping_carrier, tracking_code }, actorId) => {
+  if (!shipping_carrier && !tracking_code) {
+    throw new Error("Vui lòng cung cấp ít nhất đơn vị vận chuyển hoặc mã vận đơn");
+  }
+
+  const order = await Order.findById(orderId);
+  if (!order) throw new Error("Không tìm thấy đơn hàng");
+
+  if (!SHIPPING_INFO_ALLOWED_STATUSES.includes(order.status)) {
+    throw new Error(
+      `Chỉ có thể cập nhật thông tin vận chuyển khi đơn ở trạng thái: ${SHIPPING_INFO_ALLOWED_STATUSES.join(", ")}. Trạng thái hiện tại: ${order.status}`,
+    );
+  }
+
+  if (shipping_carrier !== undefined) order.shipping_carrier = shipping_carrier.trim() || null;
+  if (tracking_code !== undefined) order.tracking_code = tracking_code.trim() || null;
+
+  order.status_history.push({
+    action: "shipping_info_updated",
+    actor: actorId,
+  });
+
+  await order.save();
+  return order;
 };
 
 exports.checkoutWithPayment = async (userId, orderData) => {
@@ -1084,6 +1153,16 @@ async function deductStockIfNeededOnShipped(order) {
   order.stock_deducted_at = new Date();
 }
 
+/**
+ * Các trạng thái liên quan đến luồng trả hàng — KHÔNG được cập nhật
+ * qua endpoint status thông thường. Phải đi qua return.service.
+ */
+const RETURN_FLOW_STATUSES = [
+  ORDER_STATUS.RETURN_REQUESTED,
+  ORDER_STATUS.RETURNED,
+  ORDER_STATUS.REFUNDED,
+];
+
 exports.updateOrderStatus = async (orderId, newStatus, userRole, actorId = null) => {
   const order = await Order.findById(orderId);
   if (!order) throw new Error("Không tìm thấy đơn hàng");
@@ -1094,6 +1173,19 @@ exports.updateOrderStatus = async (orderId, newStatus, userRole, actorId = null)
   }
   if (order.status === ORDER_STATUS.CANCELLED) {
     throw new Error("Đơn đã hủy, không thể cập nhật trạng thái");
+  }
+
+  // Chặn bypass luồng trả hàng: return_requested / returned / refunded
+  // chỉ được set bởi return.service (có transaction + kiểm tra ReturnRequest đầy đủ).
+  if (RETURN_FLOW_STATUSES.includes(normalizedStatus)) {
+    throw new Error(
+      `Trạng thái "${normalizedStatus}" chỉ được cập nhật thông qua luồng xử lý trả hàng (ReturnRequest). Vui lòng dùng API /api/admin/returns/:id/approve → receive → refund.`,
+    );
+  }
+  if (RETURN_FLOW_STATUSES.includes(order.status)) {
+    throw new Error(
+      `Đơn đang ở trạng thái "${order.status}" (thuộc luồng trả hàng), không thể cập nhật thủ công qua endpoint này.`,
+    );
   }
 
   if (OPS_ONLY_STATUSES.includes(normalizedStatus) && userRole !== "operations") {

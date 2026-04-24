@@ -99,7 +99,7 @@ function getOpenApiSpec() {
     openapi: "3.0.3",
     info: {
       title: "OptiLens Shop API",
-      version: "1.1.0",
+      version: "1.2.0",
       description:
         "Tài liệu OpenAPI đồng bộ với routes hiện tại của backend OptiLens Shop.",
     },
@@ -120,6 +120,14 @@ function getOpenApiSpec() {
       { name: "MoMo" },
       { name: "VNPay" },
       { name: "Inventory" },
+      {
+        name: "Finance",
+        description:
+          "Thu chi & báo cáo doanh thu (manager, admin). Chi phí nhập tay; doanh thu lấy từ Order/Payment/ReturnRequest.",
+      },
+      { name: "Ops Orders", description: "Luồng Ops: gia công, đóng gói, giao hàng" },
+      { name: "Returns – Customer", description: "Khách hàng gửi & tra cứu yêu cầu trả hàng" },
+      { name: "Returns – Admin", description: "Admin/Ops xử lý yêu cầu trả hàng (nhận, hoàn tất, từ chối)" },
     ],
     components: {
       securitySchemes: {
@@ -292,6 +300,234 @@ function getOpenApiSpec() {
                 },
               },
             },
+          },
+        },
+
+        // ── Shipping Info ──────────────────────────────────────────────────────
+        ShippingInfoBody: {
+          type: "object",
+          description:
+            "Cập nhật thông tin vận chuyển. Ít nhất một trong hai trường phải có giá trị.",
+          properties: {
+            shipping_carrier: {
+              type: "string",
+              example: "GHN",
+              description: "Đơn vị vận chuyển (GHN, GHTK, Viettel Post…)",
+            },
+            tracking_code: {
+              type: "string",
+              example: "GHN123456789",
+              description: "Mã vận đơn / mã giao hàng",
+            },
+          },
+        },
+
+        // ── Return Request ─────────────────────────────────────────────────────
+        ReturnItemInput: {
+          type: "object",
+          required: ["order_item_id", "quantity"],
+          properties: {
+            order_item_id: {
+              type: "string",
+              description: "ObjectId của dòng sản phẩm trong đơn (OrderItem._id)",
+            },
+            quantity: {
+              type: "integer",
+              minimum: 1,
+              description: "Số lượng muốn trả (≤ số lượng đã mua)",
+            },
+          },
+        },
+
+        RequestReturnBody: {
+          type: "object",
+          required: ["order_id", "return_reason", "items"],
+          properties: {
+            order_id: {
+              type: "string",
+              description: "ObjectId của đơn hàng muốn trả",
+            },
+            return_reason: {
+              type: "string",
+              minLength: 10,
+              description: "Mô tả lý do trả hàng (bắt buộc, tối thiểu 10 ký tự)",
+            },
+            reason_category: {
+              type: "string",
+              enum: [
+                "damaged_on_arrival",
+                "wrong_item",
+                "changed_mind",
+                "defective",
+                "other",
+              ],
+              default: "other",
+              description: "Phân loại lý do trả hàng",
+            },
+            items: {
+              type: "array",
+              minItems: 1,
+              items: { $ref: "#/components/schemas/ReturnItemInput" },
+            },
+          },
+        },
+
+        ReturnHistoryLog: {
+          type: "object",
+          properties: {
+            action: { type: "string", example: "INSPECTING" },
+            actor: { type: "string", description: "User ID người thực hiện" },
+            at: { type: "string", format: "date-time" },
+            note: { type: "string" },
+          },
+        },
+
+        ReturnRequest: {
+          type: "object",
+          properties: {
+            _id: { type: "string" },
+            order_id: { type: "string", description: "Order ID hoặc object Order đã populate" },
+            requested_by: { type: "string", description: "User ID khách hàng" },
+            return_reason: { type: "string" },
+            reason_category: {
+              type: "string",
+              enum: ["damaged_on_arrival", "wrong_item", "changed_mind", "defective", "other"],
+            },
+            items: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  order_item_id: { type: "string" },
+                  variant_id: { type: "string" },
+                  quantity: { type: "integer" },
+                  item_type: { type: "string", enum: ["frame", "lens"], nullable: true },
+                },
+              },
+            },
+            status: {
+              type: "string",
+              description:
+                "PENDING=Chờ duyệt, APPROVED=Đã chấp nhận trả, INSPECTING=Đã nhận & kiểm tra, REFUNDED=Đã hoàn tiền, REJECTED=Từ chối. Giá trị RECEIVED/PROCESSING/COMPLETED là dữ liệu cũ.",
+              enum: [
+                "PENDING",
+                "APPROVED",
+                "INSPECTING",
+                "REFUNDED",
+                "REJECTED",
+                "RECEIVED",
+                "PROCESSING",
+                "COMPLETED",
+              ],
+            },
+            condition_at_receipt: {
+              type: "string",
+              enum: ["NEW", "DAMAGED", "USED"],
+              nullable: true,
+              description: "Tình trạng hàng do Ops đánh giá khi nhận về",
+            },
+            is_restocked: { type: "boolean", description: "Đã cộng lại vào kho chưa" },
+            refund_amount: { type: "number", description: "Số tiền thực tế hoàn cho khách (VND)" },
+            handled_by: { type: "string", nullable: true, description: "User ID Ops/Admin xử lý" },
+            rejected_reason: { type: "string", nullable: true },
+            history_log: {
+              type: "array",
+              items: { $ref: "#/components/schemas/ReturnHistoryLog" },
+            },
+            createdAt: { type: "string", format: "date-time" },
+            updatedAt: { type: "string", format: "date-time" },
+          },
+        },
+
+        ReceiveReturnBody: {
+          type: "object",
+          required: ["condition_at_receipt"],
+          properties: {
+            condition_at_receipt: {
+              type: "string",
+              enum: ["NEW", "DAMAGED", "USED"],
+              description:
+                "NEW = còn nguyên vẹn → eligible for restock. DAMAGED = hàng hỏng. USED = đã qua sử dụng.",
+            },
+            note: {
+              type: "string",
+              description: "Ghi chú thêm của Ops (tùy chọn)",
+            },
+          },
+        },
+
+        RejectReturnBody: {
+          type: "object",
+          required: ["rejected_reason"],
+          properties: {
+            rejected_reason: {
+              type: "string",
+              description: "Lý do từ chối yêu cầu trả hàng (bắt buộc)",
+            },
+          },
+        },
+
+        RestockLogItem: {
+          type: "object",
+          properties: {
+            variant_id: { type: "string" },
+            quantity: { type: "integer" },
+            restock: { type: "boolean" },
+            reason: { type: "string", description: "Giải thích quyết định restock/no-restock" },
+          },
+        },
+
+        CompleteReturnResponse: {
+          type: "object",
+          properties: {
+            message: { type: "string" },
+            returnRequest: { $ref: "#/components/schemas/ReturnRequest" },
+            restockLog: {
+              type: "array",
+              items: { $ref: "#/components/schemas/RestockLogItem" },
+              description:
+                "Chi tiết từng item: có được cộng kho không và lý do tại sao.",
+            },
+            finalOrderStatus: {
+              type: "string",
+              enum: ["returned", "refunded"],
+              description:
+                "returned = COD/chưa thu tiền. refunded = đã thu qua MoMo/VNPay → đánh dấu hoàn tiền.",
+            },
+          },
+        },
+
+        FinanceExpenseBody: {
+          type: "object",
+          required: ["title", "amount", "category", "occurred_at"],
+          properties: {
+            title: { type: "string", maxLength: 200 },
+            amount: { type: "number", minimum: 0 },
+            category: {
+              type: "string",
+              enum: [
+                "marketing",
+                "payroll",
+                "rent",
+                "utilities",
+                "logistics",
+                "inventory_purchase",
+                "equipment",
+                "tax_fees",
+                "platform_fees",
+                "other",
+              ],
+            },
+            occurred_at: { type: "string", format: "date-time", description: "Ngày phát sinh chứng từ" },
+            description: { type: "string", maxLength: 2000 },
+            reference_no: { type: "string", maxLength: 100, description: "Số hóa đơn / phiếu chi" },
+          },
+        },
+
+        VoidExpenseBody: {
+          type: "object",
+          properties: {
+            void_reason: { type: "string", description: "Lý do hủy phiếu (tùy chọn)" },
           },
         },
       },
@@ -1147,9 +1383,153 @@ function getOpenApiSpec() {
         get: {
           tags: ["Orders"],
           security: [{ bearerAuth: [] }],
-          summary: "Chi tiết đơn",
+          summary: "Chi tiết đơn hàng",
+          description:
+            "**Customer** chỉ xem được đơn của mình (trả 403 nếu không phải chủ đơn).\n\n" +
+            "**Staff** (sales / operations / manager / admin) xem được bất kỳ đơn nào.\n\n" +
+            "Response bao gồm: thông tin đơn (kể cả `shipping_carrier`, `tracking_code`), `items[]`, `payment`, `prescriptions` (nếu là đơn kính thuốc).",
           parameters: [objectIdParam("id", "Order ID")],
-          responses: { 200: { description: "OK" } },
+          responses: {
+            200: {
+              description: "Chi tiết đơn hàng",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      order: {
+                        type: "object",
+                        properties: {
+                          _id: { type: "string" },
+                          order_type: {
+                            type: "string",
+                            enum: ["stock", "pre_order", "prescription"],
+                          },
+                          status: { type: "string" },
+                          total_amount: { type: "number" },
+                          shipping_fee: { type: "number" },
+                          final_amount: { type: "number" },
+                          phone: { type: "string" },
+                          shipping_address: { type: "string" },
+                          shipping_carrier: {
+                            type: "string",
+                            nullable: true,
+                            example: "GHN",
+                            description: "Đơn vị vận chuyển (null nếu chưa nhập)",
+                          },
+                          tracking_code: {
+                            type: "string",
+                            nullable: true,
+                            example: "GHN123456789",
+                            description: "Mã vận đơn (null nếu chưa nhập)",
+                          },
+                          items: {
+                            type: "array",
+                            items: {
+                              type: "object",
+                              properties: {
+                                _id: { type: "string" },
+                                variant_id: {
+                                  type: "object",
+                                  description: "Thông tin variant (đã populate)",
+                                  properties: {
+                                    _id: { type: "string" },
+                                    sku: { type: "string" },
+                                    price: { type: "number" },
+                                    color: { type: "string" },
+                                    size: { type: "string" },
+                                    images: { type: "array", items: { type: "string" } },
+                                    product_id: {
+                                      type: "object",
+                                      properties: {
+                                        _id: { type: "string" },
+                                        name: { type: "string" },
+                                        type: { type: "string", enum: ["frame", "lens", "accessory"] },
+                                        slug: { type: "string" },
+                                        images: { type: "array", items: { type: "string" } },
+                                      },
+                                    },
+                                  },
+                                },
+                                quantity: { type: "integer" },
+                                unit_price: { type: "number" },
+                                item_type: { type: "string", enum: ["frame", "lens"], nullable: true },
+                                lens_params: { type: "object", nullable: true },
+                                product_name: { type: "string", nullable: true, description: "Shortcut: tên sản phẩm từ variant.product_id.name" },
+                                product_type: { type: "string", nullable: true, description: "Shortcut: loại sản phẩm (frame/lens/accessory)" },
+                                product_slug: { type: "string", nullable: true },
+                                images: {
+                                  type: "array",
+                                  items: { type: "string" },
+                                  description: "Ảnh hiển thị: ưu tiên ảnh variant, fallback sang ảnh product",
+                                },
+                              },
+                            },
+                          },
+                          payment: { type: "object", nullable: true },
+                          prescriptions: { type: "array", nullable: true },
+                          status_history: { type: "array", items: { type: "object" } },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            403: { description: "Không có quyền xem đơn này (customer xem đơn người khác)" },
+            404: { description: "Không tìm thấy đơn hàng" },
+          },
+        },
+      },
+
+      "/orders/{id}/shipping-info": {
+        patch: {
+          tags: ["Orders"],
+          security: [{ bearerAuth: [] }],
+          summary: "Cập nhật thông tin vận chuyển (mã vận đơn)",
+          description:
+            "Sales / Ops / Manager / Admin nhập đơn vị vận chuyển và mã vận đơn.\n\n" +
+            "**Cho phép khi đơn ở trạng thái:** `confirmed`, `packed`, `shipped`, `completed`.\n\n" +
+            "Có thể gọi nhiều lần để sửa nhầm mã. Mỗi lần gọi ghi một entry vào `status_history`.",
+          parameters: [objectIdParam("id", "Order ID")],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/ShippingInfoBody" },
+                example: {
+                  shipping_carrier: "GHN",
+                  tracking_code: "GHN123456789",
+                },
+              },
+            },
+          },
+          responses: {
+            200: {
+              description: "Lưu thành công",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      message: { type: "string", example: "Đã lưu thông tin vận chuyển" },
+                      order: { type: "object" },
+                    },
+                  },
+                },
+              },
+            },
+            400: {
+              description:
+                "Lỗi — đơn không ở trạng thái cho phép, hoặc không cung cấp carrier/tracking",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/ErrorResponse" },
+                },
+              },
+            },
+            404: { description: "Không tìm thấy đơn hàng" },
+          },
         },
       },
       "/orders/checkout": {
@@ -1303,6 +1683,597 @@ function getOpenApiSpec() {
           responses: { 200: { description: "OK" } },
         },
       },
+      // ════════════════════════════════════════════════════════════════════════
+      // Returns – Customer
+      // ════════════════════════════════════════════════════════════════════════
+
+      "/returns": {
+        post: {
+          tags: ["Returns – Customer"],
+          security: [{ bearerAuth: [] }],
+          summary: "Gửi yêu cầu trả hàng",
+          description:
+            "Khách hàng tạo yêu cầu trả hàng sau khi đơn ở trạng thái **delivered** hoặc **completed**.\n\n" +
+            "Mỗi đơn chỉ một yêu cầu trả **đang xử lý** (PENDING, APPROVED, INSPECTING — hoặc bản ghi legacy RECEIVED/PROCESSING).\n\n" +
+            "Sau khi tạo thành công, trạng thái đơn gốc tự động chuyển sang `return_requested`.",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/RequestReturnBody" },
+                example: {
+                  order_id: "64f1a2b3c4d5e6f7a8b9c0d1",
+                  return_reason: "Sản phẩm bị nứt gọng khi nhận hàng",
+                  reason_category: "damaged_on_arrival",
+                  items: [
+                    { order_item_id: "64f1a2b3c4d5e6f7a8b9c0d2", quantity: 1 },
+                  ],
+                },
+              },
+            },
+          },
+          responses: {
+            201: {
+              description: "Yêu cầu trả hàng đã được tạo",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      message: { type: "string" },
+                      returnRequest: { $ref: "#/components/schemas/ReturnRequest" },
+                    },
+                  },
+                },
+              },
+            },
+            400: {
+              description:
+                "Lỗi — đơn không ở trạng thái phù hợp, đã có yêu cầu đang xử lý, hoặc dữ liệu không hợp lệ",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/ErrorResponse" },
+                },
+              },
+            },
+          },
+        },
+      },
+
+      "/returns/my": {
+        get: {
+          tags: ["Returns – Customer"],
+          security: [{ bearerAuth: [] }],
+          summary: "Danh sách yêu cầu trả hàng của tôi",
+          description: "Trả về các yêu cầu trả hàng do khách hàng đang đăng nhập tạo ra.",
+          parameters: [
+            {
+              name: "status",
+              in: "query",
+              required: false,
+              schema: {
+                type: "string",
+                enum: [
+                  "PENDING",
+                  "APPROVED",
+                  "INSPECTING",
+                  "REFUNDED",
+                  "REJECTED",
+                  "RECEIVED",
+                  "PROCESSING",
+                  "COMPLETED",
+                ],
+              },
+              description: "Lọc theo trạng thái yêu cầu",
+            },
+            {
+              name: "page",
+              in: "query",
+              required: false,
+              schema: { type: "integer", minimum: 1, default: 1 },
+            },
+            {
+              name: "pageSize",
+              in: "query",
+              required: false,
+              schema: { type: "integer", minimum: 1, default: 10 },
+            },
+          ],
+          responses: {
+            200: {
+              description: "Danh sách yêu cầu trả hàng",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      total: { type: "integer" },
+                      page: { type: "integer" },
+                      pageSize: { type: "integer" },
+                      returns: {
+                        type: "array",
+                        items: { $ref: "#/components/schemas/ReturnRequest" },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+
+      // ════════════════════════════════════════════════════════════════════════
+      // Returns – Admin / Ops
+      // ════════════════════════════════════════════════════════════════════════
+
+      "/api/admin/returns": {
+        get: {
+          tags: ["Returns – Admin"],
+          security: [{ bearerAuth: [] }],
+          summary: "Danh sách toàn bộ yêu cầu trả hàng",
+          description:
+            "Dành cho Operations / Manager / Admin.\n\n" +
+            "Có thể lọc theo `status`, `order_id`, `condition` (tình trạng hàng nhận về).",
+          parameters: [
+            {
+              name: "status",
+              in: "query",
+              required: false,
+              schema: {
+                type: "string",
+                enum: [
+                  "PENDING",
+                  "APPROVED",
+                  "INSPECTING",
+                  "REFUNDED",
+                  "REJECTED",
+                  "RECEIVED",
+                  "PROCESSING",
+                  "COMPLETED",
+                ],
+              },
+            },
+            {
+              name: "order_id",
+              in: "query",
+              required: false,
+              schema: { type: "string" },
+              description: "Lọc theo Order ID",
+            },
+            {
+              name: "condition",
+              in: "query",
+              required: false,
+              schema: { type: "string", enum: ["NEW", "DAMAGED", "USED"] },
+              description: "Lọc theo tình trạng hàng nhận về",
+            },
+            {
+              name: "page",
+              in: "query",
+              required: false,
+              schema: { type: "integer", minimum: 1, default: 1 },
+            },
+            {
+              name: "pageSize",
+              in: "query",
+              required: false,
+              schema: { type: "integer", minimum: 1, default: 20 },
+            },
+          ],
+          responses: {
+            200: {
+              description: "Danh sách yêu cầu trả hàng",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      total: { type: "integer" },
+                      page: { type: "integer" },
+                      pageSize: { type: "integer" },
+                      returns: {
+                        type: "array",
+                        items: { $ref: "#/components/schemas/ReturnRequest" },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+
+      "/api/admin/returns/{id}": {
+        get: {
+          tags: ["Returns – Admin"],
+          security: [{ bearerAuth: [] }],
+          summary: "Chi tiết yêu cầu trả hàng",
+          description:
+            "Trả về đầy đủ thông tin: thông tin đơn gốc (populated), khách hàng, items (populated variant), lịch sử xử lý (`history_log`).",
+          parameters: [objectIdParam("id", "ReturnRequest ID")],
+          responses: {
+            200: {
+              description: "Chi tiết yêu cầu",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      returnRequest: { $ref: "#/components/schemas/ReturnRequest" },
+                    },
+                  },
+                },
+              },
+            },
+            404: { description: "Không tìm thấy yêu cầu trả hàng" },
+          },
+        },
+      },
+
+      "/api/admin/returns/{id}/approve": {
+        patch: {
+          tags: ["Returns – Admin"],
+          security: [{ bearerAuth: [] }],
+          summary: "Chấp nhận trả hàng (Chờ duyệt → Đã chấp nhận)",
+          description:
+            "Operations / Manager / Admin duyệt yêu cầu: **PENDING → APPROVED**.\n\n" +
+            "Sau bước này khách đóng gói gửi hàng về. Khi nhận kiện và mở hộp kiểm tra, gọi `PATCH .../receive`.",
+          parameters: [objectIdParam("id", "ReturnRequest ID")],
+          requestBody: {
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    note: { type: "string", description: "Ghi chú nội bộ (tùy chọn)" },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            200: {
+              description: "Đã chấp nhận trả",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      message: { type: "string" },
+                      returnRequest: { $ref: "#/components/schemas/ReturnRequest" },
+                    },
+                  },
+                },
+              },
+            },
+            400: { description: "Bad request" },
+          },
+        },
+      },
+
+      "/api/admin/returns/{id}/receive": {
+        patch: {
+          tags: ["Returns – Admin"],
+          security: [{ bearerAuth: [] }],
+          summary: "Đã nhận hàng & kiểm tra (Đang kiểm tra)",
+          description:
+            "**APPROVED → INSPECTING.** Shop đã nhận kiện từ shipper; Ops mở hộp và ghi `condition_at_receipt`.\n\n" +
+            "**Quy tắc cộng kho (bước hoàn tiền sau):** `condition_at_receipt` quyết định restock:\n" +
+            "- `NEW` → đủ điều kiện restock (trừ tròng prescription/pre_order).\n" +
+            "- `DAMAGED` / `USED` → không restock.",
+          parameters: [objectIdParam("id", "ReturnRequest ID")],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/ReceiveReturnBody" },
+                example: {
+                  condition_at_receipt: "NEW",
+                  note: "Hàng còn nguyên seal, gọng không trầy xước",
+                },
+              },
+            },
+          },
+          responses: {
+            200: {
+              description: "Đã nhận hàng và ghi nhận tình trạng",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      message: { type: "string" },
+                      returnRequest: { $ref: "#/components/schemas/ReturnRequest" },
+                    },
+                  },
+                },
+              },
+            },
+            400: {
+              description: "Lỗi — trạng thái không hợp lệ hoặc condition không đúng enum",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/ErrorResponse" },
+                },
+              },
+            },
+            404: { description: "Không tìm thấy yêu cầu" },
+          },
+        },
+      },
+
+      "/api/admin/returns/{id}/refund": {
+        patch: {
+          tags: ["Returns – Admin"],
+          security: [{ bearerAuth: [] }],
+          summary: "Hoàn tiền & hoàn tất (INSPECTING → REFUNDED)",
+          description:
+            "**Quyền:** Manager / Admin (vận hành không gọi endpoint này).\n\n" +
+            "**Điều kiện:** `INSPECTING` và đã có `condition_at_receipt`.\n\n" +
+            "**Transaction:** cộng kho (nếu đủ điều kiện), ghi ledger, cập nhật payment/order; `ReturnRequest.status` → **REFUNDED**.\n\n" +
+            "Alias: `PATCH .../complete` (cùng logic).",
+          parameters: [objectIdParam("id", "ReturnRequest ID")],
+          responses: {
+            200: {
+              description: "Đã hoàn tiền",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/CompleteReturnResponse" },
+                },
+              },
+            },
+            400: {
+              description: "Lỗi — trạng thái không phải INSPECTING, hoặc chưa ghi condition_at_receipt",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/ErrorResponse" },
+                },
+              },
+            },
+            404: { description: "Không tìm thấy yêu cầu" },
+          },
+        },
+      },
+
+      "/api/admin/returns/{id}/complete": {
+        patch: {
+          tags: ["Returns – Admin"],
+          security: [{ bearerAuth: [] }],
+          summary: "Alias: hoàn tiền (giống PATCH /refund)",
+          description: "Giống `PATCH /api/admin/returns/{id}/refund`. **Manager / Admin**.",
+          parameters: [objectIdParam("id", "ReturnRequest ID")],
+          responses: {
+            200: {
+              description: "Đã hoàn tiền",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/CompleteReturnResponse" },
+                },
+              },
+            },
+            400: {
+              description: "Bad request",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/ErrorResponse" },
+                },
+              },
+            },
+            404: { description: "Không tìm thấy yêu cầu" },
+          },
+        },
+      },
+
+      "/api/admin/returns/{id}/reject": {
+        patch: {
+          tags: ["Returns – Admin"],
+          security: [{ bearerAuth: [] }],
+          summary: "Từ chối yêu cầu trả hàng",
+          description:
+            "Từ chối khi hàng giả, vỡ do khách, hoặc không đủ điều kiện.\n\n" +
+            "Cho phép khi: **PENDING**, **APPROVED**, **INSPECTING** (và bản ghi legacy RECEIVED/PROCESSING).\n\n" +
+            "Đơn gốc `return_requested` → `delivered`.",
+          parameters: [objectIdParam("id", "ReturnRequest ID")],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/RejectReturnBody" },
+                example: {
+                  rejected_reason: "Sản phẩm có dấu hiệu đã qua sử dụng, không đủ điều kiện trả",
+                },
+              },
+            },
+          },
+          responses: {
+            200: {
+              description: "Đã từ chối yêu cầu",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      message: { type: "string" },
+                      returnRequest: { $ref: "#/components/schemas/ReturnRequest" },
+                    },
+                  },
+                },
+              },
+            },
+            400: {
+              description: "Lỗi — trạng thái không hợp lệ hoặc thiếu lý do từ chối",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/ErrorResponse" },
+                },
+              },
+            },
+            404: { description: "Không tìm thấy yêu cầu" },
+          },
+        },
+      },
+
+      "/finance/summary": {
+        get: {
+          tags: ["Finance"],
+          security: [{ bearerAuth: [] }],
+          summary: "Tổng quan thu — chi — hoàn — ước lượng lãi",
+          description:
+            "Doanh thu theo đơn (delivered/completed, theo created_at). Tiền vào theo Payment (paid/deposit-paid, theo paid_at). Hoàn tiền: ReturnRequest REFUNDED (updatedAt; tương thích COMPLETED cũ). Chi: FinanceExpense active (occurred_at).",
+          parameters: [
+            {
+              name: "start_date",
+              in: "query",
+              schema: { type: "string", format: "date-time" },
+              description: "Mặc định: 30 ngày trước end_date",
+            },
+            {
+              name: "end_date",
+              in: "query",
+              schema: { type: "string", format: "date-time" },
+              description: "Mặc định: hiện tại",
+            },
+          ],
+          responses: { 200: { description: "OK" }, 400: { description: "Bad request" } },
+        },
+      },
+      "/finance/revenue/breakdown": {
+        get: {
+          tags: ["Finance"],
+          security: [{ bearerAuth: [] }],
+          summary: "Chi tiết doanh thu (payment × status, đơn × status)",
+          parameters: [
+            { name: "start_date", in: "query", schema: { type: "string", format: "date-time" } },
+            { name: "end_date", in: "query", schema: { type: "string", format: "date-time" } },
+          ],
+          responses: { 200: { description: "OK" } },
+        },
+      },
+      "/finance/cashflow": {
+        get: {
+          tags: ["Finance"],
+          security: [{ bearerAuth: [] }],
+          summary: "Dòng tiền (tiền vào vs chi theo bucket)",
+          parameters: [
+            { name: "start_date", in: "query", schema: { type: "string", format: "date-time" } },
+            { name: "end_date", in: "query", schema: { type: "string", format: "date-time" } },
+            {
+              name: "group_by",
+              in: "query",
+              schema: { type: "string", enum: ["day", "week", "month"], default: "day" },
+            },
+          ],
+          responses: { 200: { description: "OK" } },
+        },
+      },
+      "/finance/revenue/orders": {
+        get: {
+          tags: ["Finance"],
+          security: [{ bearerAuth: [] }],
+          summary: "Danh sách đơn ghi nhận doanh thu (delivered/completed) trong kỳ",
+          parameters: [
+            { name: "start_date", in: "query", schema: { type: "string", format: "date-time" } },
+            { name: "end_date", in: "query", schema: { type: "string", format: "date-time" } },
+            { name: "page", in: "query", schema: { type: "integer", default: 1 } },
+            { name: "pageSize", in: "query", schema: { type: "integer", default: 20 } },
+          ],
+          responses: { 200: { description: "OK" } },
+        },
+      },
+      "/finance/refunds": {
+        get: {
+          tags: ["Finance"],
+          security: [{ bearerAuth: [] }],
+          summary: "Danh sách hoàn tiền đã hoàn tất trong kỳ",
+          parameters: [
+            { name: "start_date", in: "query", schema: { type: "string", format: "date-time" } },
+            { name: "end_date", in: "query", schema: { type: "string", format: "date-time" } },
+            { name: "page", in: "query", schema: { type: "integer" } },
+            { name: "pageSize", in: "query", schema: { type: "integer" } },
+          ],
+          responses: { 200: { description: "OK" } },
+        },
+      },
+      "/finance/expenses/by-category": {
+        get: {
+          tags: ["Finance"],
+          security: [{ bearerAuth: [] }],
+          summary: "Tổng chi phí theo danh mục trong kỳ",
+          parameters: [
+            { name: "start_date", in: "query", schema: { type: "string", format: "date-time" } },
+            { name: "end_date", in: "query", schema: { type: "string", format: "date-time" } },
+          ],
+          responses: { 200: { description: "OK" } },
+        },
+      },
+      "/finance/expenses": {
+        get: {
+          tags: ["Finance"],
+          security: [{ bearerAuth: [] }],
+          summary: "Danh sách phiếu chi",
+          parameters: [
+            { name: "start_date", in: "query", schema: { type: "string", format: "date-time" } },
+            { name: "end_date", in: "query", schema: { type: "string", format: "date-time" } },
+            {
+              name: "status",
+              in: "query",
+              schema: { type: "string", enum: ["active", "voided", "all"], default: "active" },
+            },
+            { name: "category", in: "query", schema: { type: "string" } },
+            { name: "page", in: "query", schema: { type: "integer" } },
+            { name: "pageSize", in: "query", schema: { type: "integer" } },
+          ],
+          responses: { 200: { description: "OK" } },
+        },
+        post: {
+          tags: ["Finance"],
+          security: [{ bearerAuth: [] }],
+          summary: "Tạo phiếu chi",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": { schema: { $ref: "#/components/schemas/FinanceExpenseBody" } },
+            },
+          },
+          responses: { 201: { description: "Created" }, 400: { description: "Bad request" } },
+        },
+      },
+      "/finance/expenses/{id}": {
+        get: {
+          tags: ["Finance"],
+          security: [{ bearerAuth: [] }],
+          summary: "Chi tiết phiếu chi",
+          parameters: [objectIdParam("id", "FinanceExpense ID")],
+          responses: { 200: { description: "OK" }, 404: { description: "Not found" } },
+        },
+        patch: {
+          tags: ["Finance"],
+          security: [{ bearerAuth: [] }],
+          summary: "Cập nhật phiếu chi (không sửa phiếu đã void)",
+          parameters: [objectIdParam("id", "FinanceExpense ID")],
+          requestBody: {
+            content: {
+              "application/json": { schema: { $ref: "#/components/schemas/FinanceExpenseBody" } },
+            },
+          },
+          responses: { 200: { description: "OK" } },
+        },
+        delete: {
+          tags: ["Finance"],
+          security: [{ bearerAuth: [] }],
+          summary: "Hủy phiếu chi (soft void)",
+          parameters: [objectIdParam("id", "FinanceExpense ID")],
+          requestBody: {
+            content: {
+              "application/json": { schema: { $ref: "#/components/schemas/VoidExpenseBody" } },
+            },
+          },
+          responses: { 200: { description: "OK" } },
+        },
+      },
+
       "/inventory/receipts": {
         get: {
           tags: ["Inventory"],
