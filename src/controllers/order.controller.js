@@ -5,9 +5,13 @@ exports.getOrderListCustomer = async (req, res) => {
   try {
     const filter = {};
     if (req.query.status) filter.status = req.query.status;
+    if (req.query.order_type) filter.order_type = req.query.order_type;
+    if (req.query.payment_method) filter.payment_method = req.query.payment_method;
+    if (req.query.payment_status) filter.payment_status = req.query.payment_status;
     if (req.query.page) filter.page = req.query.page;
     if (req.query.pageSize) filter.pageSize = req.query.pageSize;
     const result = await orderService.getOrderListCustomer(req.user.id, filter);
+    res.set("Cache-Control", "private, no-store");
     res.json(result);
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -18,9 +22,13 @@ exports.getOrderListShop = async (req, res) => {
   try {
     const filter = {};
     if (req.query.status) filter.status = req.query.status;
+    if (req.query.order_type) filter.order_type = req.query.order_type;
+    if (req.query.payment_method) filter.payment_method = req.query.payment_method;
+    if (req.query.payment_status) filter.payment_status = req.query.payment_status;
     if (req.query.page) filter.page = req.query.page;
     if (req.query.pageSize) filter.pageSize = req.query.pageSize;
     const result = await orderService.getOrderListShop(filter);
+    res.set("Cache-Control", "private, no-store");
     res.json(result);
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -29,12 +37,30 @@ exports.getOrderListShop = async (req, res) => {
 
 exports.getOrderDetail = async (req, res) => {
   try {
-    const order = await orderService.getOrderDetail(req.params.id, req.user.id);
+    const order = await orderService.getOrderDetail(
+      req.params.id,
+      req.user._id ?? req.user.id,
+      req.user.role,
+    );
     res.json({ order });
   } catch (err) {
     const statusCode =
       err.message === "Bạn không có quyền xem đơn hàng này" ? 403 : 404;
     res.status(statusCode).json({ message: err.message });
+  }
+};
+
+exports.updateShippingInfo = async (req, res) => {
+  try {
+    const { shipping_carrier, tracking_code } = req.body;
+    const order = await orderService.updateShippingInfo(
+      req.params.id,
+      { shipping_carrier, tracking_code },
+      req.user._id ?? req.user.id,
+    );
+    res.json({ message: "Đã lưu thông tin vận chuyển", order });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
   }
 };
 

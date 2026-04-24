@@ -26,44 +26,6 @@ function pushStatusHistory(order, action, actorId) {
   });
 }
 
-function hasValue(v) {
-  return v !== undefined && v !== null && String(v).trim() !== "";
-}
-
-function hasCompleteWorksheet(order) {
-  const ws = order?.lens_worksheet;
-  if (!ws) return false;
-  const right = ws.right_eye || {};
-  const left = ws.left_eye || {};
-  return (
-    hasValue(right.sph) &&
-    hasValue(right.cyl) &&
-    hasValue(right.axis) &&
-    hasValue(left.sph) &&
-    hasValue(left.cyl) &&
-    hasValue(left.axis) &&
-    ws.pd !== undefined &&
-    ws.pd !== null
-  );
-}
-
-function hasCompleteItemLensParams(items) {
-  if (!Array.isArray(items) || items.length === 0) return false;
-  const requiredKeys = [
-    "sph_right",
-    "sph_left",
-    "cyl_right",
-    "cyl_left",
-    "axis_right",
-    "axis_left",
-    "pd",
-  ];
-  return items.every((item) => {
-    const lp = item?.lens_params || {};
-    return requiredKeys.every((k) => lp[k] !== undefined && lp[k] !== null);
-  });
-}
-
 function isFabricationOrder(order) {
   return (
     Boolean(order?.requires_fabrication) ||
@@ -84,6 +46,7 @@ function assertOpsEligibleOrder(order) {
 async function deductStockIfNeededOnShipped(order) {
   if (order.status !== ORDER_STATUS.SHIPPED) return;
   if (order.stock_deducted_at) return;
+  if (order.order_type === "pre_order") return;
 
   const items = await OrderItem.find({ order_id: order._id }).select(
     "variant_id quantity",
@@ -171,17 +134,6 @@ async function startProcessing(orderId, opsUserId) {
   assertOpsEligibleOrder(order);
   if (order.status !== ORDER_STATUS.CONFIRMED) {
     throw new Error("Chỉ đơn CONFIRMED mới có thể chuyển PROCESSING");
-  }
-
-  if (order.order_type === "pre_order") {
-    const items = await OrderItem.find({ order_id: orderId }).select("lens_params");
-    if (!hasCompleteWorksheet(order) && !hasCompleteItemLensParams(items)) {
-      const err = new Error(
-        "Đơn pre_order thiếu lens params đầy đủ, chưa thể start processing",
-      );
-      err.statusCode = 400;
-      throw err;
-    }
   }
 
   order.status = ORDER_STATUS.PROCESSING;

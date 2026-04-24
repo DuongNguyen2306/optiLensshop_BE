@@ -38,10 +38,11 @@ function aggregateVariantQuantities(itemsToOrder) {
  */
 async function applyOnCheckout(session, orderType, itemsToOrder) {
   const map = aggregateVariantQuantities(itemsToOrder);
-  const mode =
-    orderType === "pre_order"
-      ? INVENTORY_PLACEMENT.RESERVED_ONLY
-      : INVENTORY_PLACEMENT.IMMEDIATE_STOCK;
+  // Pre-order: không trừ stock, không tăng reserved (tách khỏi tồn kho thực đơn).
+  if (orderType === "pre_order") {
+    return null;
+  }
+  const mode = INVENTORY_PLACEMENT.IMMEDIATE_STOCK;
 
   for (const [variantId, qty] of map.entries()) {
     if (mode === INVENTORY_PLACEMENT.IMMEDIATE_STOCK) {
@@ -70,6 +71,9 @@ async function applyOnCheckout(session, orderType, itemsToOrder) {
  * Hoàn tác khi hủy đơn (customer cancel).
  */
 async function releaseOnCancel(order) {
+  if (order.order_type === "pre_order") {
+    return;
+  }
   const items = await OrderItem.find({ order_id: order._id });
   const map = new Map();
   for (const item of items) {
@@ -106,6 +110,9 @@ async function releaseOnCancel(order) {
  * Đơn immediate_stock — chỉ ghi nhận hoàn tất gia công (stock đã trừ lúc đặt).
  */
 async function applyFulfillmentStockOut(session, order) {
+  if (order.order_type === "pre_order") {
+    return;
+  }
   if (order.inventory_placement_mode !== INVENTORY_PLACEMENT.RESERVED_ONLY) {
     return;
   }
@@ -141,31 +148,10 @@ async function applyFulfillmentStockOut(session, order) {
 }
 
 /**
- * Pre-order: Ops bắt đầu gia công — mọi biến thể trên đơn phải đủ stock.
+ * Pre-order: không còn bắt buộc đủ stock trước khi xử lý (để tích hợp tương lai gọi an toàn).
  */
 async function assertMaterialsAvailableForPreOrder(session, orderId) {
-  const order = await mongoose.model("Order").findById(orderId).session(session);
-  if (!order || order.order_type !== "pre_order") return;
-
-  const items = await OrderItem.find({ order_id: orderId }).session(session);
-  const map = new Map();
-  for (const item of items) {
-    const k = item.variant_id.toString();
-    map.set(k, (map.get(k) || 0) + Number(item.quantity || 0));
-  }
-
-  for (const [variantId, need] of map.entries()) {
-    const v = await ProductVariant.findById(variantId)
-      .session(session)
-      .select("stock_quantity");
-    if (!v) throw new Error(`Không tìm thấy biến thể ${variantId}`);
-    const stock = Number(v.stock_quantity || 0);
-    if (stock < need) {
-      throw new Error(
-        `Chưa đủ vật tư trong kho cho biến thể ${variantId}: có ${stock}, cần ${need} — vui lòng nhập hàng`,
-      );
-    }
-  }
+  return;
 }
 
 module.exports = {

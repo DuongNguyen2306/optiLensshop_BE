@@ -1,6 +1,8 @@
 const Cart = require("../models/cart.schema");
 const ProductVariant = require("../models/productVariant.schema");
 const Combo = require("../models/combo.schema");
+const Order = require("../models/order.schema");
+const OrderItem = require("../models/orderItem.schema");
 const mongoose = require("mongoose");
 const { sanitizeLensParams } = require("../utils/lens-params");
 
@@ -420,6 +422,81 @@ exports.clearCart = async (userId) => {
   const cart = await Cart.findOne({ user_id: userId });
   if (!cart) return null;
   cart.items = [];
+  cart.updated_at = new Date();
+  await cart.save();
+  return cart;
+};
+
+function refIdString(ref) {
+  if (!ref) return "";
+  if (typeof ref === "string") return ref;
+  if (ref._id) return String(ref._id);
+  return String(ref);
+}
+
+/**
+ * Sau khi thanh toán online thành công: trừ khỏi giỏ đúng các dòng tương ứng OrderItem.
+ * Idempotent nếu giỏ đã được trừ trước đó (không âm số lượng).
+ */
+exports.subtractCartLinesForOrder = async (orderId) => {
+  const order = await Order.findById(orderId).select("user_id");
+  if (!order) return null;
+
+  const orderItems = await OrderItem.find({ order_id: orderId }).lean();
+  const comboGroupSeen = new Set();
+  const comboQty = new Map();
+  const variantQty = new Map();
+
+  for (const it of orderItems) {
+    if (it.combo_id && it.combo_group_id) {
+      const gid = String(it.combo_group_id);
+      if (comboGroupSeen.has(gid)) continue;
+      comboGroupSeen.add(gid);
+      const cid = String(it.combo_id);
+      comboQty.set(cid, (comboQty.get(cid) || 0) + Number(it.quantity || 0));
+    } else {
+      const vid = String(it.variant_id);
+      variantQty.set(vid, (variantQty.get(vid) || 0) + Number(it.quantity || 0));
+    }
+  }
+
+  const cart = await Cart.findOne({ user_id: order.user_id });
+  if (!cart || !cart.items.length) return cart;
+
+  const nextItems = [];
+  for (const item of cart.items) {
+    const plain = item.toObject ? item.toObject() : { ...item };
+    let qty = Number(plain.quantity || 0);
+    if (plain.combo_id) {
+      const cid = refIdString(plain.combo_id);
+      let take = comboQty.get(cid) || 0;
+      if (take > 0) {
+        const used = Math.min(qty, take);
+        qty -= used;
+        comboQty.set(cid, take - used);
+      }
+    } else if (plain.variant_id) {
+      const vid = refIdString(plain.variant_id);
+      let take = variantQty.get(vid) || 0;
+      if (take > 0) {
+        const used = Math.min(qty, take);
+        qty -= used;
+        variantQty.set(vid, take - used);
+      }
+    }
+    if (qty > 0) {
+      nextItems.push({
+        variant_id: plain.variant_id,
+        combo_id: plain.combo_id,
+        quantity: qty,
+        lens_params: plain.lens_params,
+        price_snapshot: plain.price_snapshot,
+        combo_price_snapshot: plain.combo_price_snapshot,
+      });
+    }
+  }
+
+  cart.items = nextItems;
   cart.updated_at = new Date();
   await cart.save();
   return cart;

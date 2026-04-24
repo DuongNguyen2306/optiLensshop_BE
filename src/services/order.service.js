@@ -38,6 +38,7 @@ function refIdString(ref) {
 exports.getOrderListCustomer = async (userId, filter = {}) => {
   const match = { user_id: userId };
   if (filter.status) match.status = filter.status;
+  if (filter.order_type) match.order_type = filter.order_type;
   const page = filter.page ? parseInt(filter.page) : 1;
   const pageSize = filter.pageSize ? parseInt(filter.pageSize) : 10;
   const skip = (page - 1) * pageSize;
@@ -79,6 +80,7 @@ exports.getOrderListCustomer = async (userId, filter = {}) => {
 exports.getOrderListShop = async (filter = {}) => {
   const match = {};
   if (filter.status) match.status = filter.status;
+  if (filter.order_type) match.order_type = filter.order_type;
   const page = filter.page ? parseInt(filter.page) : 1;
   const pageSize = filter.pageSize ? parseInt(filter.pageSize) : 10;
   const skip = (page - 1) * pageSize;
@@ -114,28 +116,97 @@ exports.getOrderListShop = async (filter = {}) => {
   };
 };
 
-exports.getOrderDetail = async (orderId, userId) => {
-  const order = await Order.findById(orderId);
-  if (!order) throw new AppError("Không tìm thấy đơn hàng", 404);
+const STAFF_ROLES = ["sales", "operations", "manager", "admin"];
 
-  if (order.user_id.toString() !== userId.toString()) {
-    throw new AppError("Bạn không có quyền xem đơn hàng này", 403);
+/**
+ * @param {string} orderId
+ * @param {string} userId  — ID của người gọi (dùng kiểm tra ownership cho customer)
+ * @param {string} [userRole] — Nếu là staff role thì bỏ qua kiểm tra ownership
+ */
+exports.getOrderDetail = async (orderId, userId, userRole) => {
+  const order = await Order.findById(orderId);
+  if (!order) throw new Error("Không tìm thấy đơn hàng");
+
+  const isStaff = userRole && STAFF_ROLES.includes(userRole);
+
+  if (!isStaff && order.user_id.toString() !== userId.toString()) {
+    throw new Error("Bạn không có quyền xem đơn hàng này");
   }
 
   const [items, payment, prescriptions] = await Promise.all([
-    OrderItem.find({ order_id: orderId }),
-    Payment.findOne({ order_id: orderId }),
+    OrderItem.find({ order_id: orderId })
+      .populate({
+        path: "variant_id",
+        select: "sku price images color size diameter base_curve power product_id",
+        populate: {
+          path: "product_id",
+          select: "name type images slug",
+        },
+      })
+      .lean(),
+    Payment.findOne({ order_id: orderId }).lean(),
     order.order_type === "prescription"
-      ? PrescriptionOrder.find({ order_id: orderId })
+      ? PrescriptionOrder.find({ order_id: orderId }).lean()
       : Promise.resolve(null),
   ]);
 
+  // Gắn product_name và images lên từng item để FE dùng tiện
+  const enrichedItems = items.map((item) => {
+    const variant = item.variant_id || {};
+    const product = variant.product_id || {};
+    return {
+      ...item,
+      product_name: product.name || null,
+      product_type: product.type || null,
+      product_slug: product.slug || null,
+      // Ưu tiên ảnh variant, fallback sang ảnh product
+      images:
+        Array.isArray(variant.images) && variant.images.length > 0
+          ? variant.images
+          : Array.isArray(product.images)
+            ? product.images
+            : [],
+    };
+  });
+
   return {
     ...order.toObject(),
-    items,
+    items: enrichedItems,
     payment,
     prescriptions,
   };
+};
+
+/**
+ * Sales/Ops cập nhật thông tin vận chuyển (đơn vị vận chuyển + mã vận đơn).
+ * Cho phép khi đơn ở trạng thái: confirmed, packed, shipped, completed.
+ */
+const SHIPPING_INFO_ALLOWED_STATUSES = ["confirmed", "packed", "shipped", "completed"];
+
+exports.updateShippingInfo = async (orderId, { shipping_carrier, tracking_code }, actorId) => {
+  if (!shipping_carrier && !tracking_code) {
+    throw new Error("Vui lòng cung cấp ít nhất đơn vị vận chuyển hoặc mã vận đơn");
+  }
+
+  const order = await Order.findById(orderId);
+  if (!order) throw new Error("Không tìm thấy đơn hàng");
+
+  if (!SHIPPING_INFO_ALLOWED_STATUSES.includes(order.status)) {
+    throw new Error(
+      `Chỉ có thể cập nhật thông tin vận chuyển khi đơn ở trạng thái: ${SHIPPING_INFO_ALLOWED_STATUSES.join(", ")}. Trạng thái hiện tại: ${order.status}`,
+    );
+  }
+
+  if (shipping_carrier !== undefined) order.shipping_carrier = shipping_carrier.trim() || null;
+  if (tracking_code !== undefined) order.tracking_code = tracking_code.trim() || null;
+
+  order.status_history.push({
+    action: "shipping_info_updated",
+    actor: actorId,
+  });
+
+  await order.save();
+  return order;
 };
 
 exports.checkoutWithPayment = async (userId, orderData) => {
@@ -312,11 +383,6 @@ exports.createPreorderDirect = async (userId, orderData) => {
           throw new Error("Combo chưa thuộc trạng thái preorder");
         }
 
-        frame.reserved_quantity =
-          Number(frame.reserved_quantity || 0) + orderQty;
-        lens.reserved_quantity = Number(lens.reserved_quantity || 0) + orderQty;
-        await Promise.all([frame.save({ session }), lens.save({ session })]);
-
         const effectiveComboPrice = Number(combo.combo_price || 0);
         const frameRetail = Number(frame.price) || 0;
         const lensRetail = Number(lens.price) || 0;
@@ -373,10 +439,6 @@ exports.createPreorderDirect = async (userId, orderData) => {
       if (!isPreorderVariant) {
         throw new Error("Sản phẩm chưa thuộc trạng thái preorder");
       }
-
-      variant.reserved_quantity =
-        Number(variant.reserved_quantity || 0) + orderQty;
-      await variant.save({ session });
 
       const effectivePrice = Number(variant.price || 0);
       itemsToOrder.push({
@@ -978,47 +1040,52 @@ exports.createOrderFromCart = async (userId, orderData) => {
     }).save({ session });
 
     // 11) Trừ item đã checkout khỏi cart
-    const nextCartItems = [];
-    for (const item of cart.items) {
-      const plain = item.toObject ? item.toObject() : { ...item };
-      const selected = normalizedSelectedItems.find((s) => {
-        if (s.combo_id && plain.combo_id) {
-          return String(s.combo_id).trim() === refIdString(plain.combo_id);
-        }
-        if (s.variant_id && plain.variant_id) {
-          return String(s.variant_id).trim() === refIdString(plain.variant_id);
-        }
-        return false;
-      });
-
-      if (!selected) {
-        nextCartItems.push({
-          variant_id: plain.variant_id,
-          combo_id: plain.combo_id,
-          quantity: plain.quantity,
-          lens_params: plain.lens_params,
+    // Thanh toán online (pending-payment): giữ nguyên giỏ cho đến khi thanh toán thành công
+    // (cartService.subtractCartLinesForOrder), tránh mất giỏ khi user chưa hoàn tất MoMo/VNPay.
+    const deferCartUntilPaid = paymentStatus === "pending-payment";
+    if (!deferCartUntilPaid) {
+      const nextCartItems = [];
+      for (const item of cart.items) {
+        const plain = item.toObject ? item.toObject() : { ...item };
+        const selected = normalizedSelectedItems.find((s) => {
+          if (s.combo_id && plain.combo_id) {
+            return String(s.combo_id).trim() === refIdString(plain.combo_id);
+          }
+          if (s.variant_id && plain.variant_id) {
+            return String(s.variant_id).trim() === refIdString(plain.variant_id);
+          }
+          return false;
         });
-        continue;
-      }
 
-      const requestedQty =
-        selected.quantity !== undefined
-          ? Number(selected.quantity)
-          : Number(plain.quantity);
-      const remain = Number(plain.quantity) - requestedQty;
+        if (!selected) {
+          nextCartItems.push({
+            variant_id: plain.variant_id,
+            combo_id: plain.combo_id,
+            quantity: plain.quantity,
+            lens_params: plain.lens_params,
+          });
+          continue;
+        }
 
-      if (remain > 0) {
-        nextCartItems.push({
-          variant_id: plain.variant_id,
-          combo_id: plain.combo_id,
-          quantity: remain,
-          lens_params: plain.lens_params,
-        });
+        const requestedQty =
+          selected.quantity !== undefined
+            ? Number(selected.quantity)
+            : Number(plain.quantity);
+        const remain = Number(plain.quantity) - requestedQty;
+
+        if (remain > 0) {
+          nextCartItems.push({
+            variant_id: plain.variant_id,
+            combo_id: plain.combo_id,
+            quantity: remain,
+            lens_params: plain.lens_params,
+          });
+        }
       }
+      cart.items = nextCartItems;
+      cart.updated_at = new Date();
+      await cart.save({ session });
     }
-    cart.items = nextCartItems;
-    cart.updated_at = new Date();
-    await cart.save({ session });
 
     await session.commitTransaction();
     return {
@@ -1062,6 +1129,8 @@ function assertCanTransition(order, nextStatus) {
 async function deductStockIfNeededOnShipped(order) {
   if (order.status !== ORDER_STATUS.SHIPPED) return;
   if (order.stock_deducted_at) return;
+  // Pre-order: đặt khi không đủ tồn — không trừ stock_quantity qua luồng đơn (tránh lỗi khi kho vẫn 0).
+  if (order.order_type === "pre_order") return;
 
   const items = await OrderItem.find({ order_id: order._id }).select(
     "variant_id quantity",
@@ -1085,6 +1154,16 @@ async function deductStockIfNeededOnShipped(order) {
   order.stock_deducted_at = new Date();
 }
 
+/**
+ * Các trạng thái liên quan đến luồng trả hàng — KHÔNG được cập nhật
+ * qua endpoint status thông thường. Phải đi qua return.service.
+ */
+const RETURN_FLOW_STATUSES = [
+  ORDER_STATUS.RETURN_REQUESTED,
+  ORDER_STATUS.RETURNED,
+  ORDER_STATUS.REFUNDED,
+];
+
 exports.updateOrderStatus = async (orderId, newStatus, userRole, actorId = null) => {
   const order = await Order.findById(orderId);
   if (!order) throw new Error("Không tìm thấy đơn hàng");
@@ -1095,6 +1174,19 @@ exports.updateOrderStatus = async (orderId, newStatus, userRole, actorId = null)
   }
   if (order.status === ORDER_STATUS.CANCELLED) {
     throw new Error("Đơn đã hủy, không thể cập nhật trạng thái");
+  }
+
+  // Chặn bypass luồng trả hàng: return_requested / returned / refunded
+  // chỉ được set bởi return.service (có transaction + kiểm tra ReturnRequest đầy đủ).
+  if (RETURN_FLOW_STATUSES.includes(normalizedStatus)) {
+    throw new Error(
+      `Trạng thái "${normalizedStatus}" chỉ được cập nhật thông qua luồng xử lý trả hàng (ReturnRequest). Vui lòng dùng API /api/admin/returns/:id/approve → receive → refund.`,
+    );
+  }
+  if (RETURN_FLOW_STATUSES.includes(order.status)) {
+    throw new Error(
+      `Đơn đang ở trạng thái "${order.status}" (thuộc luồng trả hàng), không thể cập nhật thủ công qua endpoint này.`,
+    );
   }
 
   if (OPS_ONLY_STATUSES.includes(normalizedStatus) && userRole !== "operations") {

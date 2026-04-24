@@ -1,5 +1,6 @@
 const { VNPay, VnpLocale } = require("vnpay");
 const paymentSchema = require("../models/payment.schema");
+const cartService = require("./cart.service");
 
 exports.createPaymentUrl = async (orderId, amount) => {
   const vnp = new VNPay({
@@ -38,6 +39,11 @@ exports.verifyPayment = async (query) => {
     }
     payment.status = "paid";
     await payment.save();
+    try {
+      await cartService.subtractCartLinesForOrder(query.vnp_TxnRef);
+    } catch (e) {
+      console.error("subtractCartLinesForOrder (vnpay)", query.vnp_TxnRef, e);
+    }
     return {
       isSuccess: true,
       message: "Thanh toán thành công",
