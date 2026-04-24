@@ -5,9 +5,13 @@ exports.getOrderListCustomer = async (req, res) => {
   try {
     const filter = {};
     if (req.query.status) filter.status = req.query.status;
+    if (req.query.order_type) filter.order_type = req.query.order_type;
+    if (req.query.payment_method) filter.payment_method = req.query.payment_method;
+    if (req.query.payment_status) filter.payment_status = req.query.payment_status;
     if (req.query.page) filter.page = req.query.page;
     if (req.query.pageSize) filter.pageSize = req.query.pageSize;
     const result = await orderService.getOrderListCustomer(req.user.id, filter);
+    res.set("Cache-Control", "private, no-store");
     res.json(result);
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -18,9 +22,13 @@ exports.getOrderListShop = async (req, res) => {
   try {
     const filter = {};
     if (req.query.status) filter.status = req.query.status;
+    if (req.query.order_type) filter.order_type = req.query.order_type;
+    if (req.query.payment_method) filter.payment_method = req.query.payment_method;
+    if (req.query.payment_status) filter.payment_status = req.query.payment_status;
     if (req.query.page) filter.page = req.query.page;
     if (req.query.pageSize) filter.pageSize = req.query.pageSize;
     const result = await orderService.getOrderListShop(filter);
+    res.set("Cache-Control", "private, no-store");
     res.json(result);
   } catch (err) {
     res.status(400).json({ message: err.message });

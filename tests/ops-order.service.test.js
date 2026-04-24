@@ -91,23 +91,19 @@ test("Non-fabrication order cannot be processed by Ops", async () => {
   }
 });
 
-test("Pre-order requires complete lens params before processing", async () => {
+test("Pre-order can start PROCESSING without full lens params", async () => {
   const originalFindById = Order.findById;
-  const originalFind = OrderItem.find;
-
-  Order.findById = async () => makeOrder({ status: "confirmed", order_type: "pre_order" });
-  OrderItem.find = () => ({
-    select: async () => [{ lens_params: { sph_right: 0 } }],
-  });
+  const order = makeOrder({ status: "confirmed", order_type: "pre_order" });
+  Order.findById = async () => order;
 
   try {
-    await assert.rejects(
-      () => opsOrderService.startProcessing("69ea00000000000000000014", "ops1"),
-      /thiếu lens params/i,
+    const updated = await opsOrderService.startProcessing(
+      "69ea00000000000000000014",
+      "ops1",
     );
+    assert.equal(updated.status, "processing");
   } finally {
     Order.findById = originalFindById;
-    OrderItem.find = originalFind;
   }
 });
 

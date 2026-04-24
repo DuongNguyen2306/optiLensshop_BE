@@ -1,5 +1,6 @@
 const Payment = require("../models/payment.schema");
 const Order = require("../models/order.schema");
+const cartService = require("./cart.service");
 
 exports.success = async (orderId) => {
   try {
@@ -31,6 +32,11 @@ exports.success = async (orderId) => {
     payment.paid_at = new Date();
     await order.save();
     await payment.save();
+    try {
+      await cartService.subtractCartLinesForOrder(orderId);
+    } catch (e) {
+      console.error("subtractCartLinesForOrder", orderId, e);
+    }
     return payment;
   } catch (error) {
     console.log(error);

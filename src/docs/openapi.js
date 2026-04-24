@@ -11,6 +11,90 @@ function getOpenApiSpec() {
     description,
   });
 
+  const orderStatusEnum = [
+    "pending",
+    "confirmed",
+    "processing",
+    "manufacturing",
+    "received",
+    "packed",
+    "shipped",
+    "delivered",
+    "completed",
+    "cancelled",
+    "return_requested",
+    "returned",
+    "refunded",
+  ];
+
+  const paymentStatusEnum = [
+    "pending",
+    "pending-payment",
+    "deposit-paid",
+    "remaining-due",
+    "paid",
+    "failed",
+    "refunded",
+  ];
+
+  /** Query filter dùng chung cho GET /orders (customer) và GET /orders/all (shop). */
+  const orderListFilterQueryParams = (options = {}) => {
+    const { shopNotes } = options;
+    return [
+      {
+        name: "status",
+        in: "query",
+        required: false,
+        schema: { type: "string", enum: orderStatusEnum },
+        description:
+          "Lọc đơn theo trạng thái đơn (`Order.status`). Không gửi = lấy mọi trạng thái.",
+      },
+      {
+        name: "page",
+        in: "query",
+        required: false,
+        schema: { type: "integer", minimum: 1, default: 1 },
+        description: "Trang (phân trang), mặc định 1.",
+      },
+      {
+        name: "pageSize",
+        in: "query",
+        required: false,
+        schema: { type: "integer", minimum: 1, default: 10 },
+        description: "Số đơn mỗi trang, mặc định 10.",
+      },
+      {
+        name: "payment_method",
+        in: "query",
+        required: false,
+        schema: { type: "string", enum: ["cod", "momo", "vnpay"] },
+        description:
+          "Lọc theo phương thức thanh toán (`Payment.method`) trên các đơn trong trang hiện tại." +
+          (shopNotes
+            ? " Với shop: nếu kèm `payment_method` hoặc `payment_status`, chỉ giữ đơn có bản ghi thanh toán khớp."
+            : ""),
+      },
+      {
+        name: "payment_status",
+        in: "query",
+        required: false,
+        schema: { type: "string", enum: paymentStatusEnum },
+        description:
+          "Lọc theo trạng thái thanh toán (`Payment.status`)." +
+          (shopNotes
+            ? " Với shop: chỉ giữ đơn (trong trang) có payment khớp khi dùng cùng `payment_method` / `payment_status`."
+            : " Customer: map payment bỏ qua bản ghi `pending-payment` khi gắn `payment` vào từng đơn."),
+      },
+      {
+        name: "order_type",
+        in: "query",
+        required: false,
+        schema: { type: "string", enum: ["stock", "pre_order", "prescription"] },
+        description: "Lọc theo loại đơn hàng (`Order.order_type`).",
+      },
+    ];
+  };
+
   return {
     openapi: "3.0.3",
     info: {
@@ -1042,6 +1126,9 @@ function getOpenApiSpec() {
           tags: ["Orders"],
           security: [{ bearerAuth: [] }],
           summary: "Danh sách đơn của customer",
+          description:
+            "Trả về đơn của user đang đăng nhập. Query filter: `status`, phân trang `page`/`pageSize`, và lọc theo `payment_method` / `payment_status` trên tập payment của các đơn trong trang. Logic backend: payment có `status` khác `pending-payment` mới đưa vào map kèm đơn; response gồm `data` (đơn + `payment`) và `pagination` (`page`, `pageSize`, `total`, `totalPages`).",
+          parameters: orderListFilterQueryParams(),
           responses: { 200: { description: "OK" } },
         },
       },
@@ -1050,6 +1137,9 @@ function getOpenApiSpec() {
           tags: ["Orders"],
           security: [{ bearerAuth: [] }],
           summary: "Danh sách đơn cho shop (sales/manager/operations/admin)",
+          description:
+            "Trả về đơn toàn hệ thống. Cùng bộ query filter như customer; nếu có `payment_method` hoặc `payment_status` thì chỉ giữ các đơn trong trang có payment khớp. `pagination.total` đếm theo filter `status` trên Order, không đổi theo filter payment.",
+          parameters: orderListFilterQueryParams({ shopNotes: true }),
           responses: { 200: { description: "OK" } },
         },
       },
