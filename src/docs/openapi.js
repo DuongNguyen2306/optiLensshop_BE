@@ -99,6 +99,42 @@ function getOpenApiSpec() {
             },
           },
         },
+        PreorderDepositRateBody: {
+          type: "object",
+          required: ["value_number"],
+          properties: {
+            value_number: {
+              type: "number",
+              minimum: 0,
+              maximum: 1,
+              example: 0.3,
+            },
+          },
+        },
+        PreorderDepositRateSetting: {
+          type: "object",
+          properties: {
+            key: { type: "string", example: "preorder_deposit_rate" },
+            value_number: { type: "number", minimum: 0, maximum: 1 },
+            source: { type: "string", enum: ["db", "missing_seed"] },
+            description: { type: "string" },
+            updated_at: { type: "string", format: "date-time", nullable: true },
+            updated_by: {
+              nullable: true,
+              oneOf: [
+                { type: "null" },
+                {
+                  type: "object",
+                  properties: {
+                    _id: { type: "string" },
+                    email: { type: "string", format: "email" },
+                    role: { type: "string" },
+                  },
+                },
+              ],
+            },
+          },
+        },
         AddressBody: {
           type: "object",
           required: ["address"],
@@ -433,6 +469,61 @@ function getOpenApiSpec() {
           summary: "Xóa manager",
           parameters: [objectIdParam("id", "Manager ID")],
           responses: { 200: { description: "OK" } },
+        },
+      },
+      "/management/settings/preorder-deposit-rate": {
+        get: {
+          tags: ["Management"],
+          security: [{ bearerAuth: [] }],
+          summary: "Lấy tỷ lệ cọc mặc định cho preorder",
+          responses: {
+            200: {
+              description: "OK",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      setting: {
+                        $ref: "#/components/schemas/PreorderDepositRateSetting",
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        put: {
+          tags: ["Management"],
+          security: [{ bearerAuth: [] }],
+          summary: "Cập nhật tỷ lệ cọc mặc định cho preorder",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/PreorderDepositRateBody" },
+              },
+            },
+          },
+          responses: {
+            200: {
+              description: "OK",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      message: { type: "string" },
+                      setting: {
+                        $ref: "#/components/schemas/PreorderDepositRateSetting",
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
         },
       },
       "/statistics/overview": {
@@ -1110,6 +1201,37 @@ function getOpenApiSpec() {
           responses: { 200: { description: "OK" } },
         },
       },
+      "/orders/{id}/confirm-received": {
+        put: {
+          tags: ["Orders"],
+          security: [{ bearerAuth: [] }],
+          summary: "Customer xác nhận đã nhận hàng (delivered -> completed)",
+          parameters: [objectIdParam("id", "Order ID")],
+          responses: { 200: { description: "OK" } },
+        },
+      },
+      "/orders/{id}/report-not-received": {
+        put: {
+          tags: ["Orders"],
+          security: [{ bearerAuth: [] }],
+          summary:
+            "Customer báo chưa nhận được hàng (delivered -> return_requested)",
+          parameters: [objectIdParam("id", "Order ID")],
+          requestBody: {
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    reason: { type: "string" },
+                  },
+                },
+              },
+            },
+          },
+          responses: { 200: { description: "OK" } },
+        },
+      },
       "/orders/{id}/status": {
         put: {
           tags: ["Orders"],
@@ -1241,6 +1363,31 @@ function getOpenApiSpec() {
           tags: ["Inventory"],
           security: [{ bearerAuth: [] }],
           summary: "Sổ kho (inventory ledger)",
+          responses: { 200: { description: "OK" } },
+        },
+      },
+      "/api/ops/orders/{id}/not-received/resolve": {
+        patch: {
+          tags: ["Orders"],
+          security: [{ bearerAuth: [] }],
+          summary:
+            "Ops/Manager/Admin xử lý báo chưa nhận được hàng (reship hoặc refund)",
+          parameters: [objectIdParam("id", "Order ID")],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["action"],
+                  properties: {
+                    action: { type: "string", enum: ["reship", "refund"] },
+                    note: { type: "string" },
+                  },
+                },
+              },
+            },
+          },
           responses: { 200: { description: "OK" } },
         },
       },
