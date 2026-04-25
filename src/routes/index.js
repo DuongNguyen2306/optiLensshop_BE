@@ -22,9 +22,10 @@ router.use("/vnpay", require("./vnpay"));
 router.use("/payment", require("./payment"));
 router.use("/statistics", require("./statistics"));
 router.use("/finance", require("./finance"));
-router.use("/inventory", require("./inventory"));
+router.use("/inbounds", require("./inbound"));
 router.use("/api/ops/orders", require("./ops-order"));
-// Temporary disable stock inbound module until rollout is approved.
+// Legacy modules (đã thay thế bằng /inbounds):
+// router.use("/inventory", require("./inventory"));
 // router.use("/api/ops/inbound", require("./stock-inbound"));
 router.use("/api/admin/analytics", require("./admin-analytics"));
 router.use("/returns", require("./returns"));

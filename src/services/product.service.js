@@ -6,6 +6,19 @@ const Model = require("../models/model.schema");
 const mongoose = require("mongoose");
 const { createHttpError } = require("../utils/create-http-error");
 
+function computeAvailableQuantity(variant = {}) {
+  const stock = Number(variant.stock_quantity || 0);
+  const reserved = Number(variant.reserved_quantity || 0);
+  return Math.max(0, stock - reserved);
+}
+
+function normalizeVariantResponse(variant = {}) {
+  return {
+    ...variant,
+    available_quantity: computeAvailableQuantity(variant),
+  };
+}
+
 function normalizeVariantFields(input = {}) {
   const normalized = {
     color: input.color,
@@ -36,7 +49,20 @@ async function addVariant(productId, payload, user) {
   const product = await Product.findById(productId);
   if (!product) throw createHttpError("Không tìm thấy sản phẩm", 404);
 
-  let { sku, price, stock_quantity, images } = payload;
+  if (payload.stock_quantity !== undefined && Number(payload.stock_quantity) > 0) {
+    throw createHttpError(
+      "Không cho phép set stock_quantity khi tạo biến thể. Vui lòng tạo phiếu nhập kho.",
+      400,
+    );
+  }
+  if (payload.reserved_quantity !== undefined) {
+    throw createHttpError(
+      "Không cho phép set reserved_quantity từ API biến thể.",
+      400,
+    );
+  }
+
+  let { sku, price, images } = payload;
   if (!price) {
     throw createHttpError("Thiếu giá cho biến thể", 400);
   }
@@ -53,11 +79,15 @@ async function addVariant(productId, payload, user) {
     product_id: productId,
     sku,
     price,
-    stock_quantity: stock_quantity || 0,
+    stock_quantity: 0,
+    reserved_quantity: 0,
     images: images || [],
     ...normalizedVariant,
   });
-  return { message: "Thêm biến thể thành công", variant };
+  return {
+    message: "Thêm biến thể thành công",
+    variant: normalizeVariantResponse(variant.toObject()),
+  };
 }
 
 function toPositiveInt(value, fallback) {
@@ -118,7 +148,7 @@ async function listProducts(query = {}) {
   variantsArr.forEach((v) => {
     const pid = v.product_id.toString();
     if (!variantsMap[pid]) variantsMap[pid] = [];
-    variantsMap[pid].push(v);
+    variantsMap[pid].push(normalizeVariantResponse(v.toObject()));
   });
 
   const items = products.map((p) => ({
@@ -151,7 +181,10 @@ async function getProductDetailBySlug(slug) {
     createdAt: -1,
   });
 
-  return { product, variants };
+  return {
+    product,
+    variants: variants.map((v) => normalizeVariantResponse(v.toObject())),
+  };
 }
 
 /**
@@ -276,7 +309,7 @@ async function listVariantsByType(query = {}) {
           }
         : null;
     return {
-      ...row,
+      ...normalizeVariantResponse(row),
       product_id: populated && populated._id ? populated._id : row.product_id,
       product,
     };
@@ -322,7 +355,10 @@ async function getProductVariants(productId, query = {}) {
     createdAt: -1,
   });
 
-  return { product_id: productId, variants };
+  return {
+    product_id: productId,
+    variants: variants.map((v) => normalizeVariantResponse(v.toObject())),
+  };
 }
 
 async function createProduct(payload, user) {
@@ -377,6 +413,21 @@ async function createProduct(payload, user) {
     is_active: true,
   });
 
+  for (const v of variants) {
+    if (v.stock_quantity !== undefined && Number(v.stock_quantity) > 0) {
+      throw createHttpError(
+        "Không cho phép set stock_quantity khi tạo biến thể. Vui lòng tạo phiếu nhập kho sau khi tạo sản phẩm.",
+        400,
+      );
+    }
+    if (v.reserved_quantity !== undefined) {
+      throw createHttpError(
+        "Không cho phép set reserved_quantity từ API tạo sản phẩm.",
+        400,
+      );
+    }
+  }
+
   const createdVariants = await ProductVariant.insertMany(
     variants.map((v, idx) => {
       let sku = v.sku;
@@ -391,7 +442,8 @@ async function createProduct(payload, user) {
         product_id: product._id,
         sku,
         price: v.price || 0,
-        stock_quantity: v.stock_quantity || 0,
+        stock_quantity: 0,
+        reserved_quantity: 0,
         images: v.images || [],
         ...normalizeVariantFields(v),
       };
@@ -400,7 +452,7 @@ async function createProduct(payload, user) {
   return {
     message: "Tạo sản phẩm thành công",
     product,
-    variants: createdVariants,
+    variants: createdVariants.map((v) => normalizeVariantResponse(v.toObject())),
   };
 }
 
@@ -442,9 +494,30 @@ async function deleteProduct(id, user) {
   if (!id) throw createHttpError("Thiếu productId", 400);
   const product = await Product.findById(id);
   if (!product) throw createHttpError("Không tìm thấy sản phẩm", 404);
-  // Xóa tất cả biến thể liên quan
+
+  const variants = await ProductVariant.find({ product_id: id }).select(
+    "stock_quantity reserved_quantity",
+  );
+  const hasStock = variants.some(
+    (v) => Number(v.stock_quantity || 0) > 0 || Number(v.reserved_quantity || 0) > 0,
+  );
+
+  if (hasStock) {
+    await ProductVariant.updateMany(
+      { product_id: id },
+      { $set: { is_active: false } },
+    );
+    product.is_active = false;
+    await product.save();
+    return {
+      message:
+        "Sản phẩm còn tồn kho hoặc đang được giữ chỗ. Đã chuyển sang trạng thái ẩn thay vì xóa cứng.",
+      product,
+      soft_disabled: true,
+    };
+  }
+
   await ProductVariant.deleteMany({ product_id: id });
-  // Xóa sản phẩm
   await Product.findByIdAndDelete(id);
   return { message: "Đã xóa sản phẩm và các biến thể liên quan" };
 }
@@ -459,6 +532,22 @@ async function deleteVariant(productId, variantId, user) {
     product_id: productId,
   });
   if (!variant) throw createHttpError("Không tìm thấy biến thể", 404);
+
+  const hasStock =
+    Number(variant.stock_quantity || 0) > 0 ||
+    Number(variant.reserved_quantity || 0) > 0;
+
+  if (hasStock) {
+    variant.is_active = false;
+    await variant.save();
+    return {
+      message:
+        "Biến thể còn tồn kho hoặc đang được giữ chỗ. Đã chuyển sang trạng thái ẩn thay vì xóa cứng.",
+      variant: normalizeVariantResponse(variant.toObject()),
+      soft_disabled: true,
+    };
+  }
+
   await ProductVariant.findByIdAndDelete(variantId);
   return { message: "Đã xóa biến thể thành công" };
 }
@@ -490,7 +579,10 @@ async function updateVariant(productId, variantId, payload, user) {
   const updated = await ProductVariant.findByIdAndUpdate(variantId, update, {
     new: true,
   });
-  return { message: "Cập nhật biến thể thành công", variant: updated };
+  return {
+    message: "Cập nhật biến thể thành công",
+    variant: normalizeVariantResponse(updated.toObject()),
+  };
 }
 
 async function toggleActiveProduct(id, user) {
