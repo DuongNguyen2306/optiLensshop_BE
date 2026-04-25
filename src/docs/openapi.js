@@ -119,7 +119,11 @@ function getOpenApiSpec() {
       { name: "Payments" },
       { name: "MoMo" },
       { name: "VNPay" },
-      { name: "Inventory" },
+      {
+        name: "Inbound",
+        description:
+          "Quản lý phiếu nhập kho (DRAFT → PENDING_APPROVAL → APPROVED → RECEIVED → COMPLETED) và sổ kho (InventoryLedger).",
+      },
       {
         name: "Finance",
         description:
@@ -249,10 +253,11 @@ function getOpenApiSpec() {
         },
         ProductVariantBody: {
           type: "object",
+          description:
+            "Payload tạo / cập nhật biến thể. Lưu ý: KHÔNG được gửi `stock_quantity` hoặc `reserved_quantity` — tồn kho chỉ thay đổi qua phiếu nhập kho (Inbound), đơn hàng và return restock. Nếu gửi sẽ bị từ chối với lỗi 400.",
           properties: {
             sku: { type: "string" },
             price: { type: "number" },
-            stock_quantity: { type: "integer" },
             images: { type: "array", items: { type: "string" } },
             color: { type: "string" },
             size: { type: "string" },
@@ -260,6 +265,37 @@ function getOpenApiSpec() {
             diameter: { type: "number" },
             base_curve: { type: "number" },
             power: { type: "number" },
+          },
+        },
+        ProductVariantResponse: {
+          type: "object",
+          description:
+            "Variant trả về từ API. `available_quantity` được tính = max(0, stock_quantity - reserved_quantity) và không lưu trong DB.",
+          properties: {
+            _id: { type: "string" },
+            product_id: { type: "string" },
+            sku: { type: "string" },
+            price: { type: "number" },
+            stock_quantity: {
+              type: "integer",
+              description: "Tồn kho thực tế (on-hand). Read-only từ phía client.",
+            },
+            reserved_quantity: {
+              type: "integer",
+              description: "Số lượng đang giữ chỗ cho đơn. Read-only từ phía client.",
+            },
+            available_quantity: {
+              type: "integer",
+              description: "Số có thể bán = max(0, stock_quantity - reserved_quantity).",
+            },
+            images: { type: "array", items: { type: "string" } },
+            color: { type: "string" },
+            size: { type: "string" },
+            bridge_fit: { type: "string" },
+            diameter: { type: "number" },
+            base_curve: { type: "number" },
+            power: { type: "number" },
+            is_active: { type: "boolean" },
           },
         },
         LensParamsBody: {
@@ -564,6 +600,48 @@ function getOpenApiSpec() {
           type: "object",
           properties: {
             void_reason: { type: "string", description: "Lý do hủy phiếu (tùy chọn)" },
+          },
+        },
+
+        InboundItemInput: {
+          type: "object",
+          required: ["variant_id", "qty_planned"],
+          properties: {
+            variant_id: { type: "string", description: "ProductVariant ID" },
+            qty_planned: {
+              type: "integer",
+              minimum: 1,
+              description: "Số lượng dự kiến nhập",
+            },
+            import_price: {
+              type: "number",
+              minimum: 0,
+              description: "Giá nhập (VND) cho mỗi đơn vị",
+            },
+          },
+        },
+        InboundCreateBody: {
+          type: "object",
+          required: ["items"],
+          properties: {
+            type: {
+              type: "string",
+              enum: ["PURCHASE", "RETURN_RESTOCK", "OPENING_BALANCE"],
+              default: "PURCHASE",
+            },
+            supplier_name: { type: "string" },
+            expected_date: { type: "string", format: "date-time" },
+            note: { type: "string" },
+            reference_orders: {
+              type: "array",
+              items: { type: "string" },
+              description: "Danh sách Order ID liên quan (tùy chọn)",
+            },
+            items: {
+              type: "array",
+              minItems: 1,
+              items: { $ref: "#/components/schemas/InboundItemInput" },
+            },
           },
         },
       },
@@ -991,6 +1069,8 @@ function getOpenApiSpec() {
         get: {
           tags: ["Products"],
           summary: "Danh sách sản phẩm",
+          description:
+            "Trả về sản phẩm kèm `variants[]`. Mỗi variant có thêm `available_quantity = max(0, stock_quantity - reserved_quantity)`.",
           parameters: [
             {
               name: "page",
@@ -1017,6 +1097,8 @@ function getOpenApiSpec() {
           tags: ["Products"],
           security: [{ bearerAuth: [] }],
           summary: "Tạo sản phẩm",
+          description:
+            "Tạo product kèm danh sách variants. **Không cho phép set `stock_quantity` / `reserved_quantity`** trong từng variant — biến thể luôn được tạo với tồn = 0. Để có hàng, hãy tạo phiếu nhập kho (Inbound) sau đó.",
           requestBody: {
             content: {
               "multipart/form-data": {
@@ -1039,20 +1121,34 @@ function getOpenApiSpec() {
                     },
                     variants: {
                       type: "string",
-                      description: "JSON string của mảng variants",
+                      description:
+                        "JSON string của mảng variants. KHÔNG được chứa `stock_quantity` hay `reserved_quantity` (sẽ trả 400).",
                     },
                   },
                 },
               },
             },
           },
-          responses: { 201: { description: "Created" } },
+          responses: {
+            201: { description: "Created" },
+            400: {
+              description:
+                "Bad request — payload chứa `stock_quantity` / `reserved_quantity`, hoặc thiếu thông tin bắt buộc.",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/ErrorResponse" },
+                },
+              },
+            },
+          },
         },
       },
       "/variants": {
         get: {
           tags: ["Products"],
           summary: "Danh sách variants theo loại sản phẩm (frame/lens) và tìm kiếm",
+          description:
+            "Mỗi item trả thêm `available_quantity = max(0, stock_quantity - reserved_quantity)`. Xem `ProductVariantResponse`.",
           parameters: [
             {
               name: "type",
@@ -1079,6 +1175,8 @@ function getOpenApiSpec() {
         get: {
           tags: ["Products"],
           summary: "Chi tiết sản phẩm theo slug",
+          description:
+            "Trả về `product` + `variants[]`. Mỗi variant có thêm `available_quantity`.",
           parameters: [
             {
               name: "slug",
@@ -1094,6 +1192,7 @@ function getOpenApiSpec() {
         get: {
           tags: ["Products"],
           summary: "Danh sách variants theo product ID",
+          description: "Mỗi variant có thêm `available_quantity`.",
           parameters: [objectIdParam("id", "Product ID")],
           responses: { 200: { description: "OK" } },
         },
@@ -1101,6 +1200,8 @@ function getOpenApiSpec() {
           tags: ["Products"],
           security: [{ bearerAuth: [] }],
           summary: "Thêm variant",
+          description:
+            "Tạo biến thể mới. **Không cho phép set `stock_quantity` / `reserved_quantity`** — biến thể luôn được tạo với tồn = 0. Tăng tồn qua phiếu nhập kho.",
           parameters: [objectIdParam("id", "Product ID")],
           requestBody: {
             content: {
@@ -1109,7 +1210,18 @@ function getOpenApiSpec() {
               },
             },
           },
-          responses: { 201: { description: "Created" } },
+          responses: {
+            201: { description: "Created" },
+            400: {
+              description:
+                "Bad request — payload chứa `stock_quantity` / `reserved_quantity`, hoặc thiếu giá.",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/ErrorResponse" },
+                },
+              },
+            },
+          },
         },
       },
       "/products/{id}": {
@@ -1124,8 +1236,31 @@ function getOpenApiSpec() {
           tags: ["Products"],
           security: [{ bearerAuth: [] }],
           summary: "Xóa sản phẩm",
+          description:
+            "Xóa sản phẩm. **Hành vi soft-disable**: nếu bất kỳ biến thể nào còn tồn (`stock_quantity > 0`) hoặc đang giữ chỗ (`reserved_quantity > 0`), API sẽ chuyển product + tất cả variant sang `is_active = false` thay vì xóa cứng và trả `soft_disabled: true`. Nếu sạch tồn, sẽ xóa cứng cả product và variants.",
           parameters: [objectIdParam("id", "Product ID")],
-          responses: { 200: { description: "OK" } },
+          responses: {
+            200: {
+              description: "OK — đã xóa cứng hoặc soft-disable",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      message: { type: "string" },
+                      product: { type: "object", nullable: true },
+                      soft_disabled: {
+                        type: "boolean",
+                        description:
+                          "true nếu sản phẩm còn tồn và bị chuyển sang ẩn thay vì xóa cứng.",
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            404: { description: "Không tìm thấy sản phẩm" },
+          },
         },
       },
       "/products/{productId}/variants/{variantId}": {
@@ -1133,6 +1268,8 @@ function getOpenApiSpec() {
           tags: ["Products"],
           security: [{ bearerAuth: [] }],
           summary: "Cập nhật variant",
+          description:
+            "Cập nhật thông tin biến thể. **Không được cập nhật `stock_quantity` / `reserved_quantity`** — sẽ trả 400. Tồn kho chỉ thay đổi qua phiếu nhập kho, đơn hàng và return restock.",
           parameters: [
             objectIdParam("productId", "Product ID"),
             objectIdParam("variantId", "Variant ID"),
@@ -1144,17 +1281,53 @@ function getOpenApiSpec() {
               },
             },
           },
-          responses: { 200: { description: "OK" } },
+          responses: {
+            200: { description: "OK" },
+            400: {
+              description:
+                "Bad request — payload chứa `stock_quantity` (phải tạo phiếu nhập kho).",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/ErrorResponse" },
+                },
+              },
+            },
+          },
         },
         delete: {
           tags: ["Products"],
           security: [{ bearerAuth: [] }],
           summary: "Xóa variant",
+          description:
+            "Xóa biến thể. **Hành vi soft-disable**: nếu variant còn tồn (`stock_quantity > 0`) hoặc đang giữ chỗ (`reserved_quantity > 0`), API sẽ chuyển sang `is_active = false` thay vì xóa cứng và trả `soft_disabled: true`. Nếu sạch tồn, xóa cứng như bình thường.",
           parameters: [
             objectIdParam("productId", "Product ID"),
             objectIdParam("variantId", "Variant ID"),
           ],
-          responses: { 200: { description: "OK" } },
+          responses: {
+            200: {
+              description: "OK — đã xóa cứng hoặc soft-disable",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      message: { type: "string" },
+                      variant: {
+                        $ref: "#/components/schemas/ProductVariantResponse",
+                      },
+                      soft_disabled: {
+                        type: "boolean",
+                        description:
+                          "true nếu biến thể còn tồn và bị chuyển sang ẩn thay vì xóa cứng.",
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            404: { description: "Không tìm thấy biến thể" },
+          },
         },
       },
       "/products/{id}/active": {
@@ -2374,34 +2547,277 @@ function getOpenApiSpec() {
         },
       },
 
-      "/inventory/receipts": {
+      "/inbounds": {
         get: {
-          tags: ["Inventory"],
+          tags: ["Inbound"],
           security: [{ bearerAuth: [] }],
           summary: "Danh sách phiếu nhập kho",
+          description:
+            "Phân quyền: operations / manager / admin.\n\nFilter: `status`, `type`, `supplier_name` (regex).",
+          parameters: [
+            {
+              name: "status",
+              in: "query",
+              schema: {
+                type: "string",
+                enum: [
+                  "DRAFT",
+                  "PENDING_APPROVAL",
+                  "APPROVED",
+                  "RECEIVED",
+                  "COMPLETED",
+                  "CANCELLED",
+                ],
+              },
+            },
+            {
+              name: "type",
+              in: "query",
+              schema: {
+                type: "string",
+                enum: ["PURCHASE", "RETURN_RESTOCK", "OPENING_BALANCE"],
+              },
+            },
+            { name: "supplier_name", in: "query", schema: { type: "string" } },
+            {
+              name: "page",
+              in: "query",
+              schema: { type: "integer", minimum: 1, default: 1 },
+            },
+            {
+              name: "pageSize",
+              in: "query",
+              schema: { type: "integer", minimum: 1, maximum: 100, default: 10 },
+            },
+          ],
           responses: { 200: { description: "OK" } },
         },
         post: {
-          tags: ["Inventory"],
+          tags: ["Inbound"],
           security: [{ bearerAuth: [] }],
-          summary: "Tạo phiếu nhập kho",
-          responses: { 201: { description: "Created" } },
+          summary: "Tạo phiếu nhập (DRAFT)",
+          description:
+            "Tạo phiếu nhập ở trạng thái DRAFT. Phân quyền: operations / manager / admin.",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/InboundCreateBody" },
+                example: {
+                  type: "PURCHASE",
+                  supplier_name: "NCC ABC",
+                  expected_date: "2026-05-01",
+                  note: "Nhập bổ sung gọng",
+                  items: [
+                    {
+                      variant_id: "64f1a2b3c4d5e6f7a8b9c0d1",
+                      qty_planned: 50,
+                      import_price: 120000,
+                    },
+                  ],
+                },
+              },
+            },
+          },
+          responses: {
+            201: { description: "Created" },
+            400: {
+              description: "Bad request",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/ErrorResponse" },
+                },
+              },
+            },
+          },
         },
       },
-      "/inventory/receipts/{id}/confirm": {
-        patch: {
-          tags: ["Inventory"],
-          security: [{ bearerAuth: [] }],
-          summary: "Xác nhận phiếu nhập kho",
-          parameters: [objectIdParam("id", "Receipt ID")],
-          responses: { 200: { description: "OK" } },
-        },
-      },
-      "/inventory/ledger": {
+      "/inbounds/{id}": {
         get: {
-          tags: ["Inventory"],
+          tags: ["Inbound"],
           security: [{ bearerAuth: [] }],
-          summary: "Sổ kho (inventory ledger)",
+          summary: "Chi tiết phiếu nhập",
+          parameters: [objectIdParam("id", "Inbound receipt ID")],
+          responses: {
+            200: { description: "OK" },
+            404: { description: "Không tìm thấy phiếu nhập" },
+          },
+        },
+        put: {
+          tags: ["Inbound"],
+          security: [{ bearerAuth: [] }],
+          summary: "Sửa phiếu DRAFT",
+          description:
+            "Chỉ phiếu DRAFT mới sửa được nội dung. Cho sửa: `type`, `supplier_name`, `expected_date`, `note`, `items`.",
+          parameters: [objectIdParam("id", "Inbound receipt ID")],
+          requestBody: {
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/InboundCreateBody" },
+              },
+            },
+          },
+          responses: {
+            200: { description: "OK" },
+            400: { description: "Phiếu không ở trạng thái DRAFT" },
+          },
+        },
+      },
+      "/inbounds/{id}/submit": {
+        post: {
+          tags: ["Inbound"],
+          security: [{ bearerAuth: [] }],
+          summary: "Gửi duyệt (DRAFT → PENDING_APPROVAL)",
+          parameters: [objectIdParam("id", "Inbound receipt ID")],
+          responses: {
+            200: { description: "OK" },
+            400: { description: "Trạng thái không hợp lệ hoặc phiếu rỗng" },
+          },
+        },
+      },
+      "/inbounds/{id}/approve": {
+        post: {
+          tags: ["Inbound"],
+          security: [{ bearerAuth: [] }],
+          summary: "Duyệt phiếu (PENDING_APPROVAL → APPROVED)",
+          description: "Phân quyền: manager / admin.",
+          parameters: [objectIdParam("id", "Inbound receipt ID")],
+          responses: {
+            200: { description: "OK" },
+            400: { description: "Phiếu không ở trạng thái PENDING_APPROVAL" },
+          },
+        },
+      },
+      "/inbounds/{id}/reject": {
+        post: {
+          tags: ["Inbound"],
+          security: [{ bearerAuth: [] }],
+          summary: "Từ chối phiếu (PENDING_APPROVAL → DRAFT)",
+          description: "Phân quyền: manager / admin. Bắt buộc ghi chú lý do.",
+          parameters: [objectIdParam("id", "Inbound receipt ID")],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["note"],
+                  properties: {
+                    note: { type: "string", description: "Lý do từ chối" },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            200: { description: "OK" },
+            400: { description: "Trạng thái không hợp lệ hoặc thiếu note" },
+          },
+        },
+      },
+      "/inbounds/{id}/cancel": {
+        post: {
+          tags: ["Inbound"],
+          security: [{ bearerAuth: [] }],
+          summary: "Hủy phiếu",
+          description:
+            "Phân quyền: manager / admin. Cho phép hủy khi phiếu ở DRAFT / PENDING_APPROVAL / APPROVED (chưa nhận hàng). Bắt buộc nhập `cancel_reason`.",
+          parameters: [objectIdParam("id", "Inbound receipt ID")],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["cancel_reason"],
+                  properties: {
+                    cancel_reason: { type: "string" },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            200: { description: "OK" },
+            400: { description: "Phiếu đã nhận hàng / hoàn tất, không hủy được" },
+          },
+        },
+      },
+      "/inbounds/{id}/receive": {
+        post: {
+          tags: ["Inbound"],
+          security: [{ bearerAuth: [] }],
+          summary: "Nhận hàng vào kho (APPROVED → RECEIVED)",
+          description:
+            "Tăng `stock_quantity` của từng variant đúng `qty_planned` (chính sách v1: không cho over-receiving, không partial). Ghi InventoryLedger và chạy allocation FIFO cho các đơn pre_order ở `confirmed`. Đơn nào đủ hàng sẽ tự chuyển sang `processing`.",
+          parameters: [objectIdParam("id", "Inbound receipt ID")],
+          responses: {
+            200: { description: "OK" },
+            400: { description: "Phiếu không ở trạng thái APPROVED" },
+          },
+        },
+      },
+      "/inbounds/{id}/complete": {
+        post: {
+          tags: ["Inbound"],
+          security: [{ bearerAuth: [] }],
+          summary: "Chốt phiếu (RECEIVED → COMPLETED)",
+          description: "Khoá phiếu sau khi đã nhận hàng và đối soát.",
+          parameters: [objectIdParam("id", "Inbound receipt ID")],
+          responses: {
+            200: { description: "OK" },
+            400: { description: "Phiếu chưa ở trạng thái RECEIVED" },
+          },
+        },
+      },
+      "/inbounds/ledger": {
+        get: {
+          tags: ["Inbound"],
+          security: [{ bearerAuth: [] }],
+          summary: "Sổ kho (Inventory Ledger)",
+          description:
+            "Truy vấn lịch sử biến động tồn kho. Filter: `variant_id`, `event_type`, `ref_type`, `ref_id`.",
+          parameters: [
+            { name: "variant_id", in: "query", schema: { type: "string" } },
+            {
+              name: "event_type",
+              in: "query",
+              schema: {
+                type: "string",
+                enum: [
+                  "receipt_confirmed",
+                  "inbound_completed",
+                  "manual_adjustment",
+                  "order_reserve",
+                  "order_release",
+                  "order_deduct",
+                  "return_restock",
+                ],
+              },
+            },
+            {
+              name: "ref_type",
+              in: "query",
+              schema: {
+                type: "string",
+                enum: [
+                  "inventory_receipt",
+                  "stock_inbound",
+                  "order",
+                  "cart",
+                  "manual",
+                  "return_request",
+                ],
+              },
+            },
+            { name: "ref_id", in: "query", schema: { type: "string" } },
+            { name: "page", in: "query", schema: { type: "integer", default: 1 } },
+            {
+              name: "pageSize",
+              in: "query",
+              schema: { type: "integer", default: 20, maximum: 200 },
+            },
+          ],
           responses: { 200: { description: "OK" } },
         },
       },
