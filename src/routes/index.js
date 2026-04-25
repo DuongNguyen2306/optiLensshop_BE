@@ -24,6 +24,9 @@ router.use("/statistics", require("./statistics"));
 router.use("/finance", require("./finance"));
 router.use("/inventory", require("./inventory"));
 router.use("/api/ops/orders", require("./ops-order"));
+// Temporary disable stock inbound module until rollout is approved.
+// router.use("/api/ops/inbound", require("./stock-inbound"));
+router.use("/api/admin/analytics", require("./admin-analytics"));
 router.use("/returns", require("./returns"));
 router.use("/api/admin/returns", require("./admin-returns"));
 

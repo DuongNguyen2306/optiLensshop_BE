@@ -1,18 +1,25 @@
+const mongoose = require("mongoose");
 const Order = require("../models/order.schema");
 const Payment = require("../models/payment.schema");
 const ReturnRequest = require("../models/returnRequest.schema");
 const { RETURN_STATUS } = require("../models/returnRequest.schema");
 const FinanceExpense = require("../models/financeExpense.schema");
 const { EXPENSE_CATEGORY } = require("../models/financeExpense.schema");
+const OrderItem = require("../models/orderItem.schema");
+const ProductVariant = require("../models/productVariant.schema");
+const Product = require("../models/product.schema");
+const StockInbound = require("../models/stockInbound.schema");
 
 /** Đơn đã giao / hoàn tất — dùng ghi nhận doanh thu theo đơn (giống statistics) */
 const REVENUE_ORDER_STATUSES = ["delivered", "completed"];
 
 function parseDateRange(query = {}) {
   const now = new Date();
-  const endDate = query.end_date ? new Date(query.end_date) : now;
-  const startDate = query.start_date
-    ? new Date(query.start_date)
+  const endRaw = query.endDate || query.end_date;
+  const startRaw = query.startDate || query.start_date;
+  const endDate = endRaw ? new Date(endRaw) : now;
+  const startDate = startRaw
+    ? new Date(startRaw)
     : new Date(endDate.getTime() - 30 * 24 * 60 * 60 * 1000);
 
   if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
@@ -23,6 +30,14 @@ function parseDateRange(query = {}) {
   }
 
   return { startDate, endDate };
+}
+
+function dateKey(date, groupBy) {
+  const d = new Date(date);
+  if (groupBy === "month") {
+    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+  }
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
 }
 
 function parseGroupBy(groupBy = "day") {
@@ -593,4 +608,214 @@ exports.voidExpense = async (id, userId, void_reason) => {
   doc.updated_by = userId;
   await doc.save();
   return doc;
+};
+
+/**
+ * Dashboard tài chính cho admin.
+ * - Gross revenue: tổng final_amount completed, trừ refund trong kỳ.
+ * - Cash flow: Payment paid/deposit-paid + remaining_amount COD completed.
+ * - Receivables: remaining_amount của đơn shipped.
+ * - Gross profit: doanh thu item - giá vốn (map theo StockInbound COMPLETED gần nhất).
+ */
+exports.getAdminFinanceAnalytics = async (query = {}) => {
+  const { startDate, endDate } = parseDateRange(query);
+  const timeDiffMs = endDate.getTime() - startDate.getTime();
+  const groupBy = timeDiffMs > 90 * 24 * 60 * 60 * 1000 ? "month" : "day";
+
+  const completedOrderMatch = {
+    status: "completed",
+    created_at: { $gte: startDate, $lte: endDate },
+  };
+
+  const [completedOrders, shippedOrders, refundedReturns] = await Promise.all([
+    Order.find(completedOrderMatch)
+      .select("_id order_type final_amount remaining_amount created_at")
+      .lean(),
+    Order.find({
+      status: "shipped",
+      created_at: { $gte: startDate, $lte: endDate },
+    })
+      .select("_id remaining_amount")
+      .lean(),
+    ReturnRequest.find({
+      status: { $in: [RETURN_STATUS.REFUNDED, "COMPLETED"] },
+      updatedAt: { $gte: startDate, $lte: endDate },
+    })
+      .select("refund_amount updatedAt")
+      .lean(),
+  ]);
+
+  const completedOrderIds = completedOrders.map((o) => o._id);
+  const [payments, completedOrderItems] = await Promise.all([
+    Payment.find({
+      order_id: { $in: completedOrderIds },
+      status: { $in: ["paid", "deposit-paid"] },
+    })
+      .select("order_id method amount paid_at status")
+      .lean(),
+    OrderItem.find({ order_id: { $in: completedOrderIds } })
+      .select("order_id variant_id quantity unit_price")
+      .lean(),
+  ]);
+
+  // Map giá vốn theo StockInbound COMPLETED gần nhất của từng variant.
+  const variantIds = [...new Set(completedOrderItems.map((i) => String(i.variant_id)))];
+  const inboundRows = await StockInbound.aggregate([
+    {
+      $match: {
+        status: "COMPLETED",
+        completed_at: { $lte: endDate },
+      },
+    },
+    { $unwind: "$items" },
+    {
+      $match: {
+        "items.variant_id": {
+          $in: variantIds.map((id) => new mongoose.Types.ObjectId(id)),
+        },
+      },
+    },
+    { $sort: { completed_at: -1, updatedAt: -1 } },
+    {
+      $group: {
+        _id: "$items.variant_id",
+        import_price: { $first: "$items.import_price" },
+      },
+    },
+  ]);
+  const latestImportPriceByVariant = new Map(
+    inboundRows.map((r) => [String(r._id), Number(r.import_price || 0)]),
+  );
+
+  const grossRevenueRaw = completedOrders.reduce((s, o) => s + Number(o.final_amount || 0), 0);
+  const totalRefundAmount = refundedReturns.reduce((s, r) => s + Number(r.refund_amount || 0), 0);
+  const totalRevenue = Math.max(0, grossRevenueRaw - totalRefundAmount);
+
+  const paymentCollected = payments.reduce((s, p) => s + Number(p.amount || 0), 0);
+  const codRemainingCompleted = completedOrders.reduce(
+    (s, o) => s + Number(o.remaining_amount || 0),
+    0,
+  );
+  const cashInHand = paymentCollected + codRemainingCompleted;
+
+  const receivables = shippedOrders.reduce((s, o) => s + Number(o.remaining_amount || 0), 0);
+
+  let grossSalesByItems = 0;
+  let totalCost = 0;
+  const soldByVariant = new Map();
+  for (const item of completedOrderItems) {
+    const qty = Number(item.quantity || 0);
+    const unitPrice = Number(item.unit_price || 0);
+    const revenue = unitPrice * qty;
+    const importPrice = Number(latestImportPriceByVariant.get(String(item.variant_id)) || 0);
+    grossSalesByItems += revenue;
+    totalCost += importPrice * qty;
+    const key = String(item.variant_id);
+    if (!soldByVariant.has(key)) soldByVariant.set(key, { revenue: 0, sold: 0 });
+    const curr = soldByVariant.get(key);
+    curr.revenue += revenue;
+    curr.sold += qty;
+  }
+  const totalProfit = grossSalesByItems - totalCost;
+
+  // Charts: revenue (completed orders) and cashIn (payments), subtract refunds by bucket.
+  const revenueByBucket = new Map();
+  completedOrders.forEach((o) => {
+    const k = dateKey(o.created_at, groupBy);
+    revenueByBucket.set(k, (revenueByBucket.get(k) || 0) + Number(o.final_amount || 0));
+  });
+  const cashInByBucket = new Map();
+  payments.forEach((p) => {
+    if (!p.paid_at) return;
+    const k = dateKey(p.paid_at, groupBy);
+    cashInByBucket.set(k, (cashInByBucket.get(k) || 0) + Number(p.amount || 0));
+  });
+  const refundsByBucket = new Map();
+  refundedReturns.forEach((r) => {
+    const k = dateKey(r.updatedAt, groupBy);
+    refundsByBucket.set(k, (refundsByBucket.get(k) || 0) + Number(r.refund_amount || 0));
+  });
+  const chartKeys = new Set([
+    ...revenueByBucket.keys(),
+    ...cashInByBucket.keys(),
+    ...refundsByBucket.keys(),
+  ]);
+  const charts = [...chartKeys].sort().map((k) => ({
+    date: k,
+    revenue: Math.max(0, (revenueByBucket.get(k) || 0) - (refundsByBucket.get(k) || 0)),
+    cashIn: cashInByBucket.get(k) || 0,
+  }));
+
+  // Top products
+  const topVariantIds = [...soldByVariant.entries()]
+    .sort((a, b) => b[1].revenue - a[1].revenue)
+    .slice(0, 5)
+    .map(([variantId]) => variantId);
+  const topVariants = await ProductVariant.find({ _id: { $in: topVariantIds } })
+    .select("_id sku product_id")
+    .lean();
+  const productIds = [...new Set(topVariants.map((v) => String(v.product_id)))];
+  const products = await Product.find({ _id: { $in: productIds } }).select("_id name").lean();
+  const productById = new Map(products.map((p) => [String(p._id), p]));
+  const variantById = new Map(topVariants.map((v) => [String(v._id), v]));
+
+  const topProducts = topVariantIds.map((variantId) => {
+    const stat = soldByVariant.get(variantId) || { revenue: 0, sold: 0 };
+    const variant = variantById.get(variantId);
+    const product = variant ? productById.get(String(variant.product_id)) : null;
+    return {
+      variant_id: variantId,
+      sku: variant?.sku || null,
+      name: product?.name || variant?.sku || "Unknown Product",
+      revenue: stat.revenue,
+      sold: stat.sold,
+    };
+  });
+
+  // Payment method ratio
+  const methodTotals = new Map();
+  payments.forEach((p) => {
+    const m = p.method || "unknown";
+    methodTotals.set(m, (methodTotals.get(m) || 0) + Number(p.amount || 0));
+  });
+  const totalMethodAmount = [...methodTotals.values()].reduce((s, v) => s + v, 0);
+  const paymentMethods = [...methodTotals.entries()].map(([method, amount]) => ({
+    method,
+    amount,
+    percent: totalMethodAmount > 0 ? Math.round((amount / totalMethodAmount) * 10000) / 100 : 0,
+  }));
+
+  // Order type revenue ratio
+  const orderTypeMap = new Map();
+  completedOrders.forEach((o) => {
+    const type = o.order_type || "unknown";
+    orderTypeMap.set(type, (orderTypeMap.get(type) || 0) + Number(o.final_amount || 0));
+  });
+  const totalOrderTypeRevenue = [...orderTypeMap.values()].reduce((s, v) => s + v, 0);
+  const orderTypes = [...orderTypeMap.entries()].map(([orderType, revenue]) => ({
+    orderType,
+    revenue,
+    percent:
+      totalOrderTypeRevenue > 0
+        ? Math.round((revenue / totalOrderTypeRevenue) * 10000) / 100
+        : 0,
+  }));
+
+  return {
+    period: { startDate, endDate, groupBy },
+    summary: {
+      totalRevenue,
+      grossRevenueRaw,
+      totalRefundAmount,
+      totalProfit,
+      cashInHand,
+      receivables,
+    },
+    charts,
+    topProducts,
+    breakdown: {
+      paymentMethods,
+      orderTypes,
+    },
+  };
 };

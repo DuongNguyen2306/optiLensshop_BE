@@ -109,3 +109,12 @@ exports.voidExpense = async (req, res) => {
     res.status(400).json({ message: err.message });
   }
 };
+
+exports.getAdminFinanceAnalytics = async (req, res) => {
+  try {
+    const data = await financeService.getAdminFinanceAnalytics(req.query || {});
+    res.json(data);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+};

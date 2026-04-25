@@ -178,17 +178,63 @@ exports.listReturns = async (filter = {}) => {
   return { total, page, pageSize, returns };
 };
 
+function normalizeArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function enrichReturnItems(returnRequest) {
+  const plain = returnRequest?.toObject ? returnRequest.toObject() : returnRequest;
+  if (!plain) return plain;
+
+  const enrichedItems = normalizeArray(plain.items).map((item) => {
+    const orderItem = item.order_item_id || {};
+    const variant = item.variant_id || {};
+    const product = variant.product_id || {};
+
+    const variantImages = normalizeArray(variant.images);
+    const productImages = normalizeArray(product.images);
+
+    return {
+      ...item,
+      product_name: product.name || null,
+      product_slug: product.slug || null,
+      product_type: product.type || item.item_type || null,
+      sku: variant.sku || null,
+      image:
+        (variantImages.length > 0 ? variantImages[0] : null) ||
+        (productImages.length > 0 ? productImages[0] : null),
+      images: variantImages.length > 0 ? variantImages : productImages,
+      ordered_quantity: Number(orderItem.quantity || 0),
+      return_quantity: Number(item.quantity || 0),
+      unit_price: Number(orderItem.unit_price || 0),
+      line_total: Number(orderItem.unit_price || 0) * Number(item.quantity || 0),
+    };
+  });
+
+  return {
+    ...plain,
+    items: enrichedItems,
+  };
+}
+
 /** Xem chi tiết một yêu cầu trả hàng. */
 exports.getReturnDetail = async (returnId) => {
   const returnRequest = await ReturnRequest.findById(returnId)
     .populate("order_id")
     .populate("requested_by", "email profile")
     .populate("handled_by", "email profile")
-    .populate("items.variant_id")
+    .populate({
+      path: "items.variant_id",
+      select: "sku price images product_id",
+      populate: {
+        path: "product_id",
+        select: "name slug type images",
+      },
+    })
     .populate("items.order_item_id");
 
   if (!returnRequest) throw new Error("Không tìm thấy yêu cầu trả hàng");
-  return returnRequest;
+  return enrichReturnItems(returnRequest);
 };
 
 // ─── PATCH /api/admin/returns/:id/approve ─────────────────────────────────────
