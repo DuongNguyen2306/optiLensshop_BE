@@ -13,6 +13,7 @@ const inventoryLedgerSchema = new Schema(
       type: String,
       enum: [
         "receipt_confirmed",
+        "inbound_completed",
         "manual_adjustment",
         "order_reserve",
         "order_release",
@@ -30,7 +31,15 @@ const inventoryLedgerSchema = new Schema(
     note: { type: String, default: "" },
     ref_type: {
       type: String,
-      enum: ["inventory_receipt", "order", "cart", "manual", "return_request", null],
+      enum: [
+        "inventory_receipt",
+        "stock_inbound",
+        "order",
+        "cart",
+        "manual",
+        "return_request",
+        null,
+      ],
       default: null,
     },
     ref_id: { type: Schema.Types.ObjectId, default: null },
