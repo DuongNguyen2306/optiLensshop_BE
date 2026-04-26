@@ -31,6 +31,7 @@ router.post(
   "/:id/variants",
   authenticate,
   authorize(["manager", "admin"]),
+  upload.array("images"),
   productController.addVariant,
 );
 
@@ -65,6 +66,7 @@ router.put(
   "/:productId/variants/:variantId",
   authenticate,
   authorize(["manager", "admin"]),
+  upload.array("images"),
   productController.updateVariant,
 );
 

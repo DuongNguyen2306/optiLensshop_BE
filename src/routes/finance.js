@@ -53,6 +53,14 @@ router.get(
   financeController.getExpenseSummaryByCategory,
 );
 
+/** Đối soát số lượng nhập kho vs sổ InventoryLedger */
+router.get(
+  "/reconciliation/inventory",
+  authenticate,
+  authorize(financeRoles),
+  financeController.getInventoryReconciliation,
+);
+
 /** CRUD phiếu chi */
 router.post(
   "/expenses",
