@@ -11,4 +11,11 @@ router.get(
   financeController.getAdminFinanceAnalytics,
 );
 
+router.get(
+  "/finance-clean",
+  authenticate,
+  authorize(["manager", "admin"]),
+  financeController.getAdminFinanceAnalyticsClean,
+);
+
 module.exports = router;

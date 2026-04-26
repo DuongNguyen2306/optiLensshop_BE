@@ -15,14 +15,36 @@ const InventoryLedger = require("../models/inventoryLedger.schema");
 /** Đơn đã giao / hoàn tất — dùng ghi nhận doanh thu theo đơn (giống statistics) */
 const REVENUE_ORDER_STATUSES = ["delivered", "completed"];
 
+/**
+ * FE thường gửi end = "2026-04-26" → new Date() = 00:00:00.000Z cùng ngày, khiến mọi
+ * completed_at sau 00:00Z cùng ngày bị loại bởi $lte. Chuỗi chỉ YYYY-MM-DD: end = 23:59:59.999Z.
+ */
 function parseDateRange(query = {}) {
   const now = new Date();
   const endRaw = query.endDate || query.end_date;
   const startRaw = query.startDate || query.start_date;
-  const endDate = endRaw ? new Date(endRaw) : now;
-  const startDate = startRaw
-    ? new Date(startRaw)
-    : new Date(endDate.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+  const isDateOnly = (s) => s != null && /^\d{4}-\d{2}-\d{2}$/.test(String(s).trim());
+
+  let endDate;
+  if (!endRaw) {
+    endDate = now;
+  } else if (isDateOnly(endRaw)) {
+    const d = String(endRaw).trim();
+    endDate = new Date(`${d}T23:59:59.999Z`);
+  } else {
+    endDate = new Date(String(endRaw).trim());
+  }
+
+  let startDate;
+  if (!startRaw) {
+    startDate = new Date(endDate.getTime() - 30 * 24 * 60 * 60 * 1000);
+  } else if (isDateOnly(startRaw)) {
+    const d = String(startRaw).trim();
+    startDate = new Date(`${d}T00:00:00.000Z`);
+  } else {
+    startDate = new Date(String(startRaw).trim());
+  }
 
   if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
     throw new Error("start_date hoặc end_date không hợp lệ");
@@ -1085,6 +1107,256 @@ exports.getAdminFinanceAnalytics = async (query = {}) => {
       ledger_inbound_events_qty: inventoryReconciliation.ledger_inbound_events_qty,
       delta: inventoryReconciliation.delta,
       in_sync: inventoryReconciliation.in_sync,
+    },
+  };
+};
+
+function utcDayKey(d) {
+  const x = new Date(d);
+  return `${x.getUTCFullYear()}-${String(x.getUTCMonth() + 1).padStart(2, "0")}-${String(x.getUTCDate()).padStart(2, "0")}`;
+}
+
+function enumerateUtcDaysInclusive(startDate, endDate) {
+  const days = [];
+  const cur = new Date(
+    Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth(), startDate.getUTCDate()),
+  );
+  const last = new Date(
+    Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), endDate.getUTCDate()),
+  );
+  while (cur <= last) {
+    days.push(utcDayKey(cur));
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+  return days;
+}
+
+/**
+ * Dashboard finance “clean”: một response gom overview, chart, distribution, audit.
+ * COGS: giá nhập mới nhất tới endDate (InboundReceipt, fallback StockInbound). Product không có cost_price.
+ */
+exports.getAdminFinanceAnalyticsClean = async (query = {}) => {
+  const { startDate, endDate } = parseDateRange(query);
+
+  const completedMatch = {
+    status: "completed",
+    created_at: { $gte: startDate, $lte: endDate },
+  };
+
+  const refundMatch = {
+    status: { $in: [RETURN_STATUS.REFUNDED, "COMPLETED"] },
+    updatedAt: { $gte: startDate, $lte: endDate },
+  };
+
+  const [
+    completedRevenueAgg,
+    refundAgg,
+    typeBucketAgg,
+    paymentMethodAgg,
+    dailyCompletedRevenueAgg,
+    dailyRefundAgg,
+    dailyPaymentAgg,
+  ] = await Promise.all([
+    Order.aggregate([
+      { $match: completedMatch },
+      { $group: { _id: null, total: { $sum: "$final_amount" } } },
+    ]),
+    ReturnRequest.aggregate([
+      { $match: refundMatch },
+      { $group: { _id: null, total: { $sum: "$refund_amount" } } },
+    ]),
+    Order.aggregate([
+      { $match: completedMatch },
+      {
+        $addFields: {
+          bucket: {
+            $cond: [{ $eq: ["$order_type", "stock"] }, "in_stock", "pre_order"],
+          },
+        },
+      },
+      {
+        $group: {
+          _id: "$bucket",
+          amount: { $sum: "$final_amount" },
+        },
+      },
+    ]),
+    Order.aggregate([
+      { $match: completedMatch },
+      {
+        $lookup: {
+          from: "payments",
+          localField: "_id",
+          foreignField: "order_id",
+          as: "pay",
+        },
+      },
+      { $unwind: "$pay" },
+      {
+        $match: {
+          "pay.status": { $in: ["paid", "deposit-paid"] },
+        },
+      },
+      {
+        $group: {
+          _id: "$pay.method",
+          amount: { $sum: "$pay.amount" },
+        },
+      },
+    ]),
+    Order.aggregate([
+      { $match: completedMatch },
+      {
+        $group: {
+          _id: {
+            $dateToString: { format: "%Y-%m-%d", date: "$created_at", timezone: "UTC" },
+          },
+          revenue: { $sum: "$final_amount" },
+        },
+      },
+    ]),
+    ReturnRequest.aggregate([
+      { $match: refundMatch },
+      {
+        $group: {
+          _id: {
+            $dateToString: { format: "%Y-%m-%d", date: "$updatedAt", timezone: "UTC" },
+          },
+          refunds: { $sum: "$refund_amount" },
+        },
+      },
+    ]),
+    Payment.aggregate([
+      {
+        $match: {
+          status: { $in: ["paid", "deposit-paid"] },
+          paid_at: { $gte: startDate, $lte: endDate },
+        },
+      },
+      {
+        $group: {
+          _id: {
+            $dateToString: { format: "%Y-%m-%d", date: "$paid_at", timezone: "UTC" },
+          },
+          cash_in: { $sum: "$amount" },
+        },
+      },
+    ]),
+  ]);
+
+  const grossCompleted = Number(completedRevenueAgg[0]?.total || 0);
+  const refundTotal = Number(refundAgg[0]?.total || 0);
+  const total_revenue = Math.max(0, Math.round((grossCompleted - refundTotal) * 100) / 100);
+
+  const completedOrders = await Order.find(completedMatch)
+    .select("_id final_amount remaining_amount created_at")
+    .lean();
+  const completedOrderIds = completedOrders.map((o) => o._id);
+
+  const [paymentsOnCompleted, orderItems] = await Promise.all([
+    Payment.find({
+      order_id: { $in: completedOrderIds },
+      status: { $in: ["paid", "deposit-paid"] },
+    })
+      .select("amount")
+      .lean(),
+    completedOrderIds.length
+      ? OrderItem.find({ order_id: { $in: completedOrderIds } })
+          .select("order_id variant_id quantity")
+          .lean()
+      : Promise.resolve([]),
+  ]);
+
+  const paymentCollected = paymentsOnCompleted.reduce((s, p) => s + Number(p.amount || 0), 0);
+  const codRemainingCompleted = completedOrders.reduce(
+    (s, o) => s + Number(o.remaining_amount || 0),
+    0,
+  );
+  const net_cash_flow = Math.round((paymentCollected + codRemainingCompleted) * 100) / 100;
+
+  const variantIds = [...new Set(orderItems.map((i) => String(i.variant_id)))];
+  const { map: costMap } = await buildLatestImportPriceByVariantBeforeDate(variantIds, endDate);
+
+  let total_cogs = 0;
+  const orderDayById = new Map(
+    completedOrders.map((o) => [String(o._id), utcDayKey(o.created_at)]),
+  );
+  const cogsByDay = new Map();
+
+  for (const line of orderItems) {
+    const qty = Number(line.quantity || 0);
+    const unit = Number(costMap.get(String(line.variant_id)) || 0);
+    const lineCogs = unit * qty;
+    total_cogs += lineCogs;
+    const day = orderDayById.get(String(line.order_id));
+    if (day) {
+      cogsByDay.set(day, (cogsByDay.get(day) || 0) + lineCogs);
+    }
+  }
+  total_cogs = Math.round(total_cogs * 100) / 100;
+
+  const gross_profit = Math.round((total_revenue - total_cogs) * 100) / 100;
+
+  const dailyRev = new Map(dailyCompletedRevenueAgg.map((r) => [r._id, Number(r.revenue || 0)]));
+  const dailyRef = new Map(dailyRefundAgg.map((r) => [r._id, Number(r.refunds || 0)]));
+  const dailyCash = new Map(dailyPaymentAgg.map((r) => [r._id, Number(r.cash_in || 0)]));
+
+  const allDays = enumerateUtcDaysInclusive(startDate, endDate);
+  const chart = allDays.map((date) => {
+    const revGross = dailyRev.get(date) || 0;
+    const ref = dailyRef.get(date) || 0;
+    const revenue = Math.max(0, Math.round((revGross - ref) * 100) / 100);
+    const cogsDay = Math.round((cogsByDay.get(date) || 0) * 100) / 100;
+    const profit = Math.round((revenue - cogsDay) * 100) / 100;
+    const cash_in = Math.round((dailyCash.get(date) || 0) * 100) / 100;
+    return { date, revenue, profit, cash_in };
+  });
+
+  const methodAmounts = paymentMethodAgg.map((r) => ({
+    key: String(r._id || "unknown"),
+    amount: Number(r.amount || 0),
+  }));
+  const methodTotal = methodAmounts.reduce((s, r) => s + r.amount, 0);
+  const payment_methods = methodAmounts.map((r) => ({
+    key: r.key,
+    amount: r.amount,
+    percent: methodTotal > 0 ? Math.round((r.amount / methodTotal) * 10000) / 100 : 0,
+  }));
+
+  const typeAmounts = typeBucketAgg.map((r) => ({
+    key: String(r._id || "other"),
+    amount: Number(r.amount || 0),
+  }));
+  const typeTotal = typeAmounts.reduce((s, r) => s + r.amount, 0);
+  const revenue_by_type = typeAmounts.map((r) => ({
+    key: r.key,
+    label: r.key === "in_stock" ? "In-stock" : "Pre-order & prescription",
+    amount: r.amount,
+    percent: typeTotal > 0 ? Math.round((r.amount / typeTotal) * 10000) / 100 : 0,
+  }));
+
+  const invRec = await buildInventoryReconciliation(startDate, endDate);
+  const deltaVal = Number(invRec.delta || 0);
+  const inventory_delta = {
+    value: deltaVal,
+    alert: Math.abs(deltaVal) > 0.0001,
+  };
+
+  return {
+    period: { startDate, endDate },
+    overview: {
+      total_revenue,
+      total_cogs,
+      gross_profit,
+      net_cash_flow,
+    },
+    chart,
+    distribution: {
+      payment_methods,
+      revenue_by_type,
+    },
+    audit: {
+      inventory_delta,
     },
   };
 };
