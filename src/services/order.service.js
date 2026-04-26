@@ -88,7 +88,11 @@ exports.getOrderListShop = async (filter = {}) => {
   const orders = await Order.find(match)
     .sort({ created_at: -1 })
     .skip(skip)
-    .limit(pageSize);
+    .limit(pageSize)
+    .populate({
+      path: "user_id",
+      select: "email profile.full_name profile.phone",
+    });
   const orderIds = orders.map((o) => o._id);
   let paymentQuery = { order_id: { $in: orderIds } };
   if (filter.payment_method) paymentQuery.method = filter.payment_method;
@@ -124,12 +128,17 @@ const STAFF_ROLES = ["sales", "operations", "manager", "admin"];
  * @param {string} [userRole] — Nếu là staff role thì bỏ qua kiểm tra ownership
  */
 exports.getOrderDetail = async (orderId, userId, userRole) => {
-  const order = await Order.findById(orderId);
+  const order = await Order.findById(orderId).populate({
+    path: "user_id",
+    select: "email profile.full_name profile.phone",
+  });
   if (!order) throw new Error("Không tìm thấy đơn hàng");
 
   const isStaff = userRole && STAFF_ROLES.includes(userRole);
 
-  if (!isStaff && order.user_id.toString() !== userId.toString()) {
+  const ownerId =
+    order.user_id && order.user_id._id ? order.user_id._id : order.user_id;
+  if (!isStaff && String(ownerId) !== userId.toString()) {
     throw new Error("Bạn không có quyền xem đơn hàng này");
   }
 
@@ -137,7 +146,8 @@ exports.getOrderDetail = async (orderId, userId, userRole) => {
     OrderItem.find({ order_id: orderId })
       .populate({
         path: "variant_id",
-        select: "sku price images color size diameter base_curve power product_id",
+        select:
+          "sku price images color size diameter base_curve power product_id",
         populate: {
           path: "product_id",
           select: "name type images slug",
@@ -181,11 +191,22 @@ exports.getOrderDetail = async (orderId, userId, userRole) => {
  * Sales/Ops cập nhật thông tin vận chuyển (đơn vị vận chuyển + mã vận đơn).
  * Cho phép khi đơn ở trạng thái: confirmed, packed, shipped, completed.
  */
-const SHIPPING_INFO_ALLOWED_STATUSES = ["confirmed", "packed", "shipped", "completed"];
+const SHIPPING_INFO_ALLOWED_STATUSES = [
+  "confirmed",
+  "packed",
+  "shipped",
+  "completed",
+];
 
-exports.updateShippingInfo = async (orderId, { shipping_carrier, tracking_code }, actorId) => {
+exports.updateShippingInfo = async (
+  orderId,
+  { shipping_carrier, tracking_code },
+  actorId,
+) => {
   if (!shipping_carrier && !tracking_code) {
-    throw new Error("Vui lòng cung cấp ít nhất đơn vị vận chuyển hoặc mã vận đơn");
+    throw new Error(
+      "Vui lòng cung cấp ít nhất đơn vị vận chuyển hoặc mã vận đơn",
+    );
   }
 
   const order = await Order.findById(orderId);
@@ -197,8 +218,10 @@ exports.updateShippingInfo = async (orderId, { shipping_carrier, tracking_code }
     );
   }
 
-  if (shipping_carrier !== undefined) order.shipping_carrier = shipping_carrier.trim() || null;
-  if (tracking_code !== undefined) order.tracking_code = tracking_code.trim() || null;
+  if (shipping_carrier !== undefined)
+    order.shipping_carrier = shipping_carrier.trim() || null;
+  if (tracking_code !== undefined)
+    order.tracking_code = tracking_code.trim() || null;
 
   order.status_history.push({
     action: "shipping_info_updated",
@@ -469,6 +492,10 @@ exports.createPreorderDirect = async (userId, orderData) => {
     if (!phone) {
       throw new Error("Thiếu số điện thoại");
     }
+    const name = String(orderData.name || "").trim();
+    if (!name) {
+      throw new Error("Thiếu tên người nhận");
+    }
 
     // 4. Tính phí ship và công nợ thanh toán cho preorder
     let shipping_fee = 0;
@@ -522,6 +549,7 @@ exports.createPreorderDirect = async (userId, orderData) => {
       deposit_amount,
       remaining_amount,
       payment_phase,
+      name,
       phone,
       shipping_address: shippingAddressStr,
     });
@@ -667,8 +695,7 @@ exports.createOrderFromCart = async (userId, orderData) => {
         if (sel.combo_id) {
           const selCombo = String(sel.combo_id).trim();
           const found = cart.items.find(
-            (i) =>
-              i.combo_id && refIdString(i.combo_id) === selCombo,
+            (i) => i.combo_id && refIdString(i.combo_id) === selCombo,
           );
           const combo = found?.combo_id || null;
           const frame = combo?.frame_variant_id || null;
@@ -744,8 +771,7 @@ exports.createOrderFromCart = async (userId, orderData) => {
       if (sel.combo_id) {
         const selCombo = String(sel.combo_id).trim();
         const found = cart.items.find(
-          (i) =>
-            i.combo_id && refIdString(i.combo_id) === selCombo,
+          (i) => i.combo_id && refIdString(i.combo_id) === selCombo,
         );
         if (!found) throw new Error("Item combo trong cart không hợp lệ");
 
@@ -809,8 +835,7 @@ exports.createOrderFromCart = async (userId, orderData) => {
       } else {
         const selVariant = String(sel.variant_id || "").trim();
         const found = cart.items.find(
-          (i) =>
-            i.variant_id && refIdString(i.variant_id) === selVariant,
+          (i) => i.variant_id && refIdString(i.variant_id) === selVariant,
         );
         if (!found) throw new Error("Item trong cart không hợp lệ");
 
@@ -858,6 +883,10 @@ exports.createOrderFromCart = async (userId, orderData) => {
     const phone = normalizePhone(orderData.phone);
     if (!phone) {
       throw new Error("Thiếu số điện thoại");
+    }
+    const name = String(orderData.name || "").trim();
+    if (!name) {
+      throw new Error("Thiếu tên người nhận");
     }
 
     const hasShippingAddress =
@@ -936,6 +965,7 @@ exports.createOrderFromCart = async (userId, orderData) => {
       deposit_amount,
       remaining_amount,
       payment_phase,
+      name,
       phone,
       shipping_address: shippingAddressStr,
     });
@@ -1052,7 +1082,9 @@ exports.createOrderFromCart = async (userId, orderData) => {
             return String(s.combo_id).trim() === refIdString(plain.combo_id);
           }
           if (s.variant_id && plain.variant_id) {
-            return String(s.variant_id).trim() === refIdString(plain.variant_id);
+            return (
+              String(s.variant_id).trim() === refIdString(plain.variant_id)
+            );
           }
           return false;
         });
@@ -1147,7 +1179,9 @@ async function deductStockIfNeededOnShipped(order) {
       { $inc: { stock_quantity: -qty } },
     );
     if (result.modifiedCount === 0) {
-      throw new Error(`Không đủ stock_quantity để trừ cho biến thể ${variantId}`);
+      throw new Error(
+        `Không đủ stock_quantity để trừ cho biến thể ${variantId}`,
+      );
     }
   }
 
@@ -1164,11 +1198,18 @@ const RETURN_FLOW_STATUSES = [
   ORDER_STATUS.REFUNDED,
 ];
 
-exports.updateOrderStatus = async (orderId, newStatus, userRole, actorId = null) => {
+exports.updateOrderStatus = async (
+  orderId,
+  newStatus,
+  userRole,
+  actorId = null,
+) => {
   const order = await Order.findById(orderId);
   if (!order) throw new Error("Không tìm thấy đơn hàng");
 
-  const normalizedStatus = String(newStatus || "").trim().toLowerCase();
+  const normalizedStatus = String(newStatus || "")
+    .trim()
+    .toLowerCase();
   if (!Object.values(ORDER_STATUS).includes(normalizedStatus)) {
     throw new Error("Trạng thái đơn hàng không hợp lệ");
   }
@@ -1189,10 +1230,16 @@ exports.updateOrderStatus = async (orderId, newStatus, userRole, actorId = null)
     );
   }
 
-  if (OPS_ONLY_STATUSES.includes(normalizedStatus) && userRole !== "operations") {
+  if (
+    OPS_ONLY_STATUSES.includes(normalizedStatus) &&
+    userRole !== "operations"
+  ) {
     throw new Error("Chỉ nhân viên operations được cập nhật trạng thái này");
   }
-  if (userRole === "operations" && normalizedStatus === ORDER_STATUS.COMPLETED) {
+  if (
+    userRole === "operations" &&
+    normalizedStatus === ORDER_STATUS.COMPLETED
+  ) {
     throw new Error(
       "Operations khong duoc cap nhat completed. Khach hang xac nhan da nhan hang moi duoc hoan tat don.",
     );
@@ -1246,9 +1293,16 @@ exports.cancelOrder = async (orderId, userId, reason) => {
     throw new Error("Đơn hàng đã hủy trước đó");
   }
 
+  // Cho phép bỏ qua khi hủy do hệ thống (ví dụ khởi tạo thanh toán online thất bại).
+  // Khi đó reason được truyền tự động (không phải string rỗng).
+  const trimmedReason = String(reason || "").trim();
+  if (!trimmedReason) {
+    throw new Error("Vui lòng nhập lý do hủy đơn");
+  }
+
   assertCanTransition(order, ORDER_STATUS.CANCELLED);
   order.status = ORDER_STATUS.CANCELLED;
-  if (reason) order.cancel_reason = reason;
+  order.cancel_reason = trimmedReason;
   pushStatusHistory(order, ORDER_STATUS.CANCELLED.toUpperCase(), userId);
   await order.save();
   return order;
@@ -1276,4 +1330,3 @@ exports.confirmReceivedByCustomer = async (orderId, userId) => {
   await order.save();
   return order;
 };
-

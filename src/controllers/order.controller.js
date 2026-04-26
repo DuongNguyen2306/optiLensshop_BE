@@ -6,8 +6,10 @@ exports.getOrderListCustomer = async (req, res) => {
     const filter = {};
     if (req.query.status) filter.status = req.query.status;
     if (req.query.order_type) filter.order_type = req.query.order_type;
-    if (req.query.payment_method) filter.payment_method = req.query.payment_method;
-    if (req.query.payment_status) filter.payment_status = req.query.payment_status;
+    if (req.query.payment_method)
+      filter.payment_method = req.query.payment_method;
+    if (req.query.payment_status)
+      filter.payment_status = req.query.payment_status;
     if (req.query.page) filter.page = req.query.page;
     if (req.query.pageSize) filter.pageSize = req.query.pageSize;
     const result = await orderService.getOrderListCustomer(req.user.id, filter);
@@ -23,8 +25,10 @@ exports.getOrderListShop = async (req, res) => {
     const filter = {};
     if (req.query.status) filter.status = req.query.status;
     if (req.query.order_type) filter.order_type = req.query.order_type;
-    if (req.query.payment_method) filter.payment_method = req.query.payment_method;
-    if (req.query.payment_status) filter.payment_status = req.query.payment_status;
+    if (req.query.payment_method)
+      filter.payment_method = req.query.payment_method;
+    if (req.query.payment_status)
+      filter.payment_status = req.query.payment_status;
     if (req.query.page) filter.page = req.query.page;
     if (req.query.pageSize) filter.pageSize = req.query.pageSize;
     const result = await orderService.getOrderListShop(filter);
@@ -68,6 +72,7 @@ exports.checkout = async (req, res) => {
   try {
     const {
       shipping_address,
+      name,
       phone,
       order_type,
       payment_method,
@@ -82,6 +87,7 @@ exports.checkout = async (req, res) => {
       req.user.id,
       {
         shipping_address,
+        name,
         phone,
         order_type,
         payment_method,
@@ -103,6 +109,7 @@ exports.preorderNow = async (req, res) => {
   try {
     const {
       shipping_address,
+      name,
       phone,
       payment_method,
       shipping_method,
@@ -112,6 +119,7 @@ exports.preorderNow = async (req, res) => {
     const { order, payUrl } =
       await orderService.createPreorderDirectWithPayment(req.user.id, {
         shipping_address,
+        name,
         phone,
         payment_method,
         shipping_method,
@@ -190,7 +198,10 @@ exports.getOpsOrders = async (req, res) => {
 
 exports.startProcessing = async (req, res) => {
   try {
-    const order = await opsOrderService.startProcessing(req.params.id, req.user.id);
+    const order = await opsOrderService.startProcessing(
+      req.params.id,
+      req.user.id,
+    );
     res.status(200).json({ message: "Ops bắt đầu gia công", order });
   } catch (err) {
     res.status(err.statusCode || 400).json({ message: err.message });
@@ -199,7 +210,10 @@ exports.startProcessing = async (req, res) => {
 
 exports.fulfillOrder = async (req, res) => {
   try {
-    const order = await opsOrderService.fulfillOrder(req.params.id, req.user.id);
+    const order = await opsOrderService.fulfillOrder(
+      req.params.id,
+      req.user.id,
+    );
     res.status(200).json({ message: "Ops hoàn tất gia công", order });
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -208,7 +222,10 @@ exports.fulfillOrder = async (req, res) => {
 
 exports.startShipping = async (req, res) => {
   try {
-    const order = await opsOrderService.startShipping(req.params.id, req.user.id);
+    const order = await opsOrderService.startShipping(
+      req.params.id,
+      req.user.id,
+    );
     res.status(200).json({ message: "Bàn giao đơn cho shipper", order });
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -217,7 +234,10 @@ exports.startShipping = async (req, res) => {
 
 exports.markDelivered = async (req, res) => {
   try {
-    const order = await opsOrderService.markDelivered(req.params.id, req.user.id);
+    const order = await opsOrderService.markDelivered(
+      req.params.id,
+      req.user.id,
+    );
     res.status(200).json({ message: "Đã giao thành công", order });
   } catch (err) {
     res.status(400).json({ message: err.message });

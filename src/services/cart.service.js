@@ -42,8 +42,6 @@ exports.addItem = async (userId, variant_id, quantity, lens_params) => {
     const qty = Number(quantity);
     if (!qty) throw new Error("Số lượng không hợp lệ");
 
-    const safeLensParams = sanitizeLensParams(lens_params);
-
     // 1. Lấy variant
     const variant = await ProductVariant.findOne({
       _id: variant_id,
@@ -51,6 +49,11 @@ exports.addItem = async (userId, variant_id, quantity, lens_params) => {
     }).populate("product_id");
 
     if (!variant) throw new Error("Không tìm thấy biến thể sản phẩm");
+
+    // Chỉ chấp nhận lens_params khi product type là "lens"
+    const productType = variant.product_id?.type;
+    const safeLensParams =
+      productType === "lens" ? sanitizeLensParams(lens_params) : null;
 
     // 2. Lấy hoặc tạo cart
     let cart = await Cart.findOne({ user_id: userId });
@@ -77,7 +80,11 @@ exports.addItem = async (userId, variant_id, quantity, lens_params) => {
     // 5. Cập nhật cart item
     if (item) {
       item.quantity = totalQty;
-      if (safeLensParams) item.lens_params = safeLensParams;
+      if (productType === "lens") {
+        if (safeLensParams) item.lens_params = safeLensParams;
+      } else {
+        item.lens_params = null;
+      }
       item.price_snapshot = variant.price;
     } else {
       cart.items.push({
@@ -190,7 +197,6 @@ exports.addComboItem = async (userId, combo_id, quantity, lens_params) => {
 };
 
 exports.updateItem = async (userId, variant_id, quantity, lens_params) => {
-  const safeLensParams = sanitizeLensParams(lens_params);
   const newQty = Number(quantity);
   if (newQty < 0) throw new Error("Số lượng không hợp lệ");
 
@@ -199,6 +205,10 @@ exports.updateItem = async (userId, variant_id, quantity, lens_params) => {
     is_active: true,
   }).populate("product_id");
   if (!variant) throw new Error("Không tìm thấy biến thể sản phẩm");
+
+  const productType = variant.product_id?.type;
+  const safeLensParams =
+    productType === "lens" ? sanitizeLensParams(lens_params) : null;
 
   // 2. Lấy cart và tìm item cần update
   const cart = await Cart.findOne({ user_id: userId });
@@ -222,7 +232,11 @@ exports.updateItem = async (userId, variant_id, quantity, lens_params) => {
   }
 
   cartItem.quantity = newQty;
-  if (safeLensParams) cartItem.lens_params = safeLensParams;
+  if (productType === "lens") {
+    if (safeLensParams) cartItem.lens_params = safeLensParams;
+  } else {
+    cartItem.lens_params = null;
+  }
   cartItem.price_snapshot = variant.price;
 
   cart.updated_at = new Date();
@@ -232,7 +246,6 @@ exports.updateItem = async (userId, variant_id, quantity, lens_params) => {
 };
 
 exports.updateItemByLineId = async (userId, cartLineId, quantity, lens_params) => {
-  const safeLensParams = sanitizeLensParams(lens_params);
   const newQty = Number(quantity);
   if (newQty < 0) throw new Error("Số lượng không hợp lệ");
   if (!mongoose.Types.ObjectId.isValid(cartLineId)) return null;
@@ -242,6 +255,10 @@ exports.updateItemByLineId = async (userId, cartLineId, quantity, lens_params) =
 
   const cartItem = cart.items.id(cartLineId);
   if (!cartItem) return null;
+
+  // lens_params chỉ áp dụng cho variant là tròng kính (lens) hoặc combo có lens.
+  // Cho variant khác (frame/accessory/sunglass) sẽ bị clear ở dưới.
+  let allowLensParams = false;
 
   if (cartItem.variant_id) {
     const variant = await ProductVariant.findOne({
@@ -262,6 +279,7 @@ exports.updateItemByLineId = async (userId, cartLineId, quantity, lens_params) =
       throw new Error(`Số lượng vượt quá tồn kho (${available})`);
     }
     cartItem.price_snapshot = variant.price;
+    allowLensParams = variant.product_id?.type === "lens";
   } else if (cartItem.combo_id) {
     const combo = await Combo.findOne({
       _id: cartItem.combo_id,
@@ -302,10 +320,16 @@ exports.updateItemByLineId = async (userId, cartLineId, quantity, lens_params) =
       throw new Error(`Số lượng vượt tồn kho tròng (${lensAvailable})`);
     }
     cartItem.combo_price_snapshot = combo.combo_price;
+    allowLensParams = true;
   }
 
   cartItem.quantity = newQty;
-  if (safeLensParams) cartItem.lens_params = safeLensParams;
+  if (allowLensParams) {
+    const safeLensParams = sanitizeLensParams(lens_params);
+    if (safeLensParams) cartItem.lens_params = safeLensParams;
+  } else {
+    cartItem.lens_params = null;
+  }
   cart.updated_at = new Date();
   await cart.save();
 

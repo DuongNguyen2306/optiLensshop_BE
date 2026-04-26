@@ -497,11 +497,11 @@ async function list(query = {}) {
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(pageSize)
-      .populate("created_by", "email role")
-      .populate("approved_by", "email role")
-      .populate("received_by", "email role")
-      .populate("completed_by", "email role")
-      .populate("cancelled_by", "email role")
+      .populate("created_by", "email role profile.full_name")
+      .populate("approved_by", "email role profile.full_name")
+      .populate("received_by", "email role profile.full_name")
+      .populate("completed_by", "email role profile.full_name")
+      .populate("cancelled_by", "email role profile.full_name")
       .lean(),
     InboundReceipt.countDocuments(filter),
   ]);
@@ -529,11 +529,11 @@ async function getDetail(id) {
       "sku product_id",
     )
     .populate("reference_orders", "_id status order_type created_at")
-    .populate("created_by", "email role")
-    .populate("approved_by", "email role")
-    .populate("received_by", "email role")
-    .populate("completed_by", "email role")
-    .populate("cancelled_by", "email role")
+    .populate("created_by", "email role profile.full_name")
+    .populate("approved_by", "email role profile.full_name")
+    .populate("received_by", "email role profile.full_name")
+    .populate("completed_by", "email role profile.full_name")
+    .populate("cancelled_by", "email role profile.full_name")
     .lean();
 
   if (!receipt) throw createHttpError("Không tìm thấy phiếu nhập", 404);
@@ -561,7 +561,7 @@ async function listLedger(query = {}) {
       .skip(skip)
       .limit(pageSize)
       .populate("variant_id", "sku product_id")
-      .populate("created_by", "email role")
+      .populate("created_by", "email role profile.full_name")
       .lean(),
     InventoryLedger.countDocuments(filter),
   ]);
