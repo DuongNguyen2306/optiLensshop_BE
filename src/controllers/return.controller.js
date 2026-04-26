@@ -100,13 +100,14 @@ exports.receiveReturn = async (req, res) => {
 
 exports.completeReturn = async (req, res) => {
   try {
-    const { returnRequest, restockLog, finalOrderStatus } =
+    const { returnRequest, restockLog, finalOrderStatus, restockInboundReceipt } =
       await returnService.completeReturn(req.params.id, req.user._id);
     res.json({
       message: "Đã hoàn tiền và hoàn tất xử lý trả hàng",
       returnRequest,
       restockLog,
       finalOrderStatus,
+      restockInboundReceipt,
     });
   } catch (err) {
     res.status(400).json({ message: err.message });

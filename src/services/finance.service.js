@@ -8,7 +8,9 @@ const { EXPENSE_CATEGORY } = require("../models/financeExpense.schema");
 const OrderItem = require("../models/orderItem.schema");
 const ProductVariant = require("../models/productVariant.schema");
 const Product = require("../models/product.schema");
+const InboundReceipt = require("../models/inboundReceipt.schema");
 const StockInbound = require("../models/stockInbound.schema");
+const InventoryLedger = require("../models/inventoryLedger.schema");
 
 /** Đơn đã giao / hoàn tất — dùng ghi nhận doanh thu theo đơn (giống statistics) */
 const REVENUE_ORDER_STATUSES = ["delivered", "completed"];
@@ -77,6 +79,203 @@ function formatBucketLabel(key, groupBy) {
   }
   return `${key.year}-${String(key.month).padStart(2, "0")}-${String(key.day).padStart(2, "0")}`;
 }
+
+/**
+ * Giá nhập gần nhất theo variant (theo completed_at), ưu tiên InboundReceipt;
+ * thiếu/0 thì lấy từ StockInbound legacy.
+ */
+async function buildLatestImportPriceByVariantBeforeDate(variantIds, beforeDate) {
+  const unique = [...new Set((variantIds || []).map(String))].filter(Boolean);
+  if (unique.length === 0) return { map: new Map(), usedLegacyVariantIds: [] };
+
+  const oids = unique.map((id) => new mongoose.Types.ObjectId(id));
+  const inboundRows = await InboundReceipt.aggregate([
+    {
+      $match: {
+        status: "COMPLETED",
+        completed_at: { $lte: beforeDate },
+      },
+    },
+    { $unwind: "$items" },
+    { $match: { "items.variant_id": { $in: oids } } },
+    { $sort: { completed_at: -1 } },
+    {
+      $group: {
+        _id: "$items.variant_id",
+        import_price: { $first: "$items.import_price" },
+      },
+    },
+  ]);
+  const map = new Map(
+    inboundRows.map((r) => [String(r._id), Number(r.import_price || 0)]),
+  );
+  const usedLegacyVariantIds = [];
+  const needLegacy = oids.filter(
+    (oid) => !map.has(String(oid)) || map.get(String(oid)) === 0,
+  );
+  if (needLegacy.length) {
+    const legacy = await StockInbound.aggregate([
+      {
+        $match: {
+          status: "COMPLETED",
+          completed_at: { $lte: beforeDate },
+        },
+      },
+      { $unwind: "$items" },
+      { $match: { "items.variant_id": { $in: needLegacy } } },
+      { $sort: { completed_at: -1 } },
+      {
+        $group: {
+          _id: "$items.variant_id",
+          import_price: { $first: "$items.import_price" },
+        },
+      },
+    ]);
+    for (const row of legacy) {
+      const k = String(row._id);
+      if (!map.has(k) || map.get(k) === 0) {
+        map.set(k, Number(row.import_price || 0));
+        usedLegacyVariantIds.push(k);
+      }
+    }
+  }
+  return { map, usedLegacyVariantIds };
+}
+
+/** Tổng giá trị nhập kho theo kỳ (theo completed_at), tách mua hàng vs hoàn trả nhập lại. */
+async function aggregateInboundValueByPeriod(startDate, endDate) {
+  const matchBase = {
+    status: "COMPLETED",
+    completed_at: { $gte: startDate, $lte: endDate },
+  };
+  const [purchaseRows, restockRows] = await Promise.all([
+    InboundReceipt.aggregate([
+      {
+        $match: {
+          ...matchBase,
+          type: { $in: ["PURCHASE", "OPENING_BALANCE"] },
+        },
+      },
+      { $unwind: "$items" },
+      {
+        $group: {
+          _id: null,
+          total: {
+            $sum: {
+              $multiply: [
+                {
+                  $cond: [
+                    { $gt: [{ $ifNull: ["$items.qty_received", 0] }, 0] },
+                    { $ifNull: ["$items.qty_received", 0] },
+                    { $ifNull: ["$items.qty_planned", 0] },
+                  ],
+                },
+                { $ifNull: ["$items.import_price", 0] },
+              ],
+            },
+          },
+        },
+      },
+    ]),
+    InboundReceipt.aggregate([
+      { $match: { ...matchBase, type: "RETURN_RESTOCK" } },
+      { $unwind: "$items" },
+      {
+        $group: {
+          _id: null,
+          total: {
+            $sum: {
+              $multiply: [
+                {
+                  $cond: [
+                    { $gt: [{ $ifNull: ["$items.qty_received", 0] }, 0] },
+                    { $ifNull: ["$items.qty_received", 0] },
+                    { $ifNull: ["$items.qty_planned", 0] },
+                  ],
+                },
+                { $ifNull: ["$items.import_price", 0] },
+              ],
+            },
+          },
+        },
+      },
+    ]),
+  ]);
+  return {
+    purchase_inbound_value: purchaseRows[0]?.total || 0,
+    return_restock_inbound_value: restockRows[0]?.total || 0,
+  };
+}
+
+/**
+ * Đối soát: tổng số lượng nhận từ phiếu COMPLETED vs tổng delta sổ cái theo sự kiện nhập.
+ */
+async function buildInventoryReconciliation(startDate, endDate) {
+  const [receiptQtyRows, ledgerRows] = await Promise.all([
+    InboundReceipt.aggregate([
+      {
+        $match: {
+          status: "COMPLETED",
+          completed_at: { $gte: startDate, $lte: endDate },
+        },
+      },
+      { $unwind: "$items" },
+      {
+        $group: {
+          _id: null,
+          total_qty: {
+            $sum: {
+              $cond: [
+                { $gt: [{ $ifNull: ["$items.qty_received", 0] }, 0] },
+                { $ifNull: ["$items.qty_received", 0] },
+                { $ifNull: ["$items.qty_planned", 0] },
+              ],
+            },
+          },
+        },
+      },
+    ]),
+    InventoryLedger.aggregate([
+      {
+        $match: {
+          event_type: { $in: ["inbound_completed", "return_restock"] },
+          createdAt: { $gte: startDate, $lte: endDate },
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          total_delta: { $sum: "$quantity_delta" },
+        },
+      },
+    ]),
+  ]);
+
+  const inboundReceiptsQty = receiptQtyRows[0]?.total_qty || 0;
+  const ledgerInboundEventsQty = ledgerRows[0]?.total_delta || 0;
+  const delta = Math.round((inboundReceiptsQty - ledgerInboundEventsQty) * 100) / 100;
+
+  return {
+    period: { start_date: startDate, end_date: endDate },
+    notes: {
+      inbound_receipts:
+        "Tổng qty từ InboundReceipt COMPLETED (qty_received, fallback qty_planned) theo completed_at.",
+      ledger:
+        "Tổng quantity_delta từ InventoryLedger event inbound_completed + return_restock theo createdAt.",
+      interpret:
+        "Lệch có thể do dữ liệu cũ, phiếu legacy StockInbound, hoặc ledger ghi từ luồng không qua InboundReceipt.",
+    },
+    inbound_receipts_qty: inboundReceiptsQty,
+    ledger_inbound_events_qty: ledgerInboundEventsQty,
+    delta,
+    in_sync: Math.abs(delta) < 0.0001,
+  };
+}
+
+exports.getInventoryReconciliation = async (query = {}) => {
+  const { startDate, endDate } = parseDateRange(query);
+  return buildInventoryReconciliation(startDate, endDate);
+};
 
 /**
  * Tổng quan thu — chi — hoàn — lợi nhuận gộp (ước lượng).
@@ -205,6 +404,43 @@ exports.getSummary = async (query = {}) => {
   const totalExpenses = exp.expense_total || 0;
   const collected = payCol.total_collected || 0;
 
+  const revenueGross = orderRev.total_final_amount || 0;
+  const revenueNet = Math.max(0, Math.round((revenueGross - totalRefunds) * 100) / 100);
+
+  const revenueOrderIdDocs = await Order.find({
+    ...orderDateMatch,
+    status: { $in: REVENUE_ORDER_STATUSES },
+  })
+    .select("_id")
+    .lean();
+  const revenueOrderIds = revenueOrderIdDocs.map((o) => o._id);
+
+  let cogs = 0;
+  const accrualDataQuality = {
+    variant_count_missing_unit_cost: 0,
+    cost_sourced_from_legacy_inbound: 0,
+  };
+  if (revenueOrderIds.length) {
+    const lineItems = await OrderItem.find({ order_id: { $in: revenueOrderIds } })
+      .select("variant_id quantity")
+      .lean();
+    const vids = [...new Set(lineItems.map((i) => i.variant_id))];
+    const { map: costMap, usedLegacyVariantIds } =
+      await buildLatestImportPriceByVariantBeforeDate(vids, endDate);
+    const missing = new Set();
+    for (const li of lineItems) {
+      const p = costMap.get(String(li.variant_id)) || 0;
+      if (p === 0) missing.add(String(li.variant_id));
+      cogs += p * Number(li.quantity || 0);
+    }
+    accrualDataQuality.variant_count_missing_unit_cost = missing.size;
+    accrualDataQuality.cost_sourced_from_legacy_inbound = usedLegacyVariantIds.length;
+  }
+  cogs = Math.round(cogs * 100) / 100;
+  const grossProfit = Math.round((revenueNet - cogs) * 100) / 100;
+  const netOperatingProfit = Math.round((grossProfit - totalExpenses) * 100) / 100;
+  const inboundValuePeriod = await aggregateInboundValueByPeriod(startDate, endDate);
+
   return {
     period: { start_date: startDate, end_date: endDate },
     notes: {
@@ -217,6 +453,8 @@ exports.getSummary = async (query = {}) => {
       expenses: "Phiếu chi active, occurred_at trong kỳ.",
       net_operating:
         "Ước lượng: tiền vào (theo paid_at) − hoàn tiền − chi phí. Không thay thế kế toán chuyên nghiệp.",
+      accrual:
+        "Accrual/P&L: revenue_net = revenue_gross − refund trong kỳ. COGS = tổng (qty × giá nhập mới nhất tới endDate) trên dòng hàng đơn delivered/completed trong kỳ. Giá ưu tiên InboundReceipt, fallback StockInbound. Giá trị nhập kho theo kỳ: purchase/return từ phiếu COMPLETED.",
     },
     revenue_by_order_status: {
       statuses_used: REVENUE_ORDER_STATUSES,
@@ -252,6 +490,17 @@ exports.getSummary = async (query = {}) => {
         (collected - totalRefunds - totalExpenses) * 100,
       ) / 100,
     },
+    accrual: {
+      revenue_gross: revenueGross,
+      revenue_net: revenueNet,
+      cogs,
+      gross_profit: grossProfit,
+      operating_expenses: totalExpenses,
+      net_operating_profit: netOperatingProfit,
+      purchase_inbound_value: inboundValuePeriod.purchase_inbound_value,
+      return_restock_inbound_value: inboundValuePeriod.return_restock_inbound_value,
+    },
+    data_quality_flags: accrualDataQuality,
     orders_in_period_by_status: orderCountStatuses.map((r) => ({
       status: r._id,
       count: r.count,
@@ -615,7 +864,7 @@ exports.voidExpense = async (id, userId, void_reason) => {
  * - Gross revenue: tổng final_amount completed, trừ refund trong kỳ.
  * - Cash flow: Payment paid/deposit-paid + remaining_amount COD completed.
  * - Receivables: remaining_amount của đơn shipped.
- * - Gross profit: doanh thu item - giá vốn (map theo StockInbound COMPLETED gần nhất).
+ * - COGS / lợi nhuận: giá vốn theo giá nhập mới nhất tới endDate (InboundReceipt, fallback StockInbound).
  */
 exports.getAdminFinanceAnalytics = async (query = {}) => {
   const { startDate, endDate } = parseDateRange(query);
@@ -658,34 +907,10 @@ exports.getAdminFinanceAnalytics = async (query = {}) => {
       .lean(),
   ]);
 
-  // Map giá vốn theo StockInbound COMPLETED gần nhất của từng variant.
+  // Giá vốn: InboundReceipt COMPLETED gần nhất tới endDate, fallback StockInbound legacy.
   const variantIds = [...new Set(completedOrderItems.map((i) => String(i.variant_id)))];
-  const inboundRows = await StockInbound.aggregate([
-    {
-      $match: {
-        status: "COMPLETED",
-        completed_at: { $lte: endDate },
-      },
-    },
-    { $unwind: "$items" },
-    {
-      $match: {
-        "items.variant_id": {
-          $in: variantIds.map((id) => new mongoose.Types.ObjectId(id)),
-        },
-      },
-    },
-    { $sort: { completed_at: -1, updatedAt: -1 } },
-    {
-      $group: {
-        _id: "$items.variant_id",
-        import_price: { $first: "$items.import_price" },
-      },
-    },
-  ]);
-  const latestImportPriceByVariant = new Map(
-    inboundRows.map((r) => [String(r._id), Number(r.import_price || 0)]),
-  );
+  const { map: latestImportPriceByVariant, usedLegacyVariantIds } =
+    await buildLatestImportPriceByVariantBeforeDate(variantIds, endDate);
 
   const grossRevenueRaw = completedOrders.reduce((s, o) => s + Number(o.final_amount || 0), 0);
   const totalRefundAmount = refundedReturns.reduce((s, r) => s + Number(r.refund_amount || 0), 0);
@@ -717,6 +942,33 @@ exports.getAdminFinanceAnalytics = async (query = {}) => {
     curr.sold += qty;
   }
   const totalProfit = grossSalesByItems - totalCost;
+
+  const missingCostVariants = new Set();
+  for (const item of completedOrderItems) {
+    const p = Number(latestImportPriceByVariant.get(String(item.variant_id)) || 0);
+    if (p === 0) missingCostVariants.add(String(item.variant_id));
+  }
+
+  const [expenseAggAdmin, inboundValuePeriod, inventoryReconciliation] = await Promise.all([
+    FinanceExpense.aggregate([
+      {
+        $match: {
+          status: "active",
+          occurred_at: { $gte: startDate, $lte: endDate },
+        },
+      },
+      { $group: { _id: null, total: { $sum: "$amount" } } },
+    ]),
+    aggregateInboundValueByPeriod(startDate, endDate),
+    buildInventoryReconciliation(startDate, endDate),
+  ]);
+  const operatingExpenses = expenseAggAdmin[0]?.total || 0;
+  const revenueNet = totalRevenue;
+  const cogsRounded = Math.round(totalCost * 100) / 100;
+  const grossProfitAccrual = Math.round((revenueNet - totalCost) * 100) / 100;
+  const netOperatingProfit = Math.round(
+    (grossProfitAccrual - operatingExpenses) * 100,
+  ) / 100;
 
   // Charts: revenue (completed orders) and cashIn (payments), subtract refunds by bucket.
   const revenueByBucket = new Map();
@@ -810,12 +1062,29 @@ exports.getAdminFinanceAnalytics = async (query = {}) => {
       totalProfit,
       cashInHand,
       receivables,
+      revenue_net: revenueNet,
+      cogs: cogsRounded,
+      gross_profit: grossProfitAccrual,
+      operating_expenses: operatingExpenses,
+      net_operating_profit: netOperatingProfit,
+      purchase_inbound_value: inboundValuePeriod.purchase_inbound_value,
+      return_restock_inbound_value: inboundValuePeriod.return_restock_inbound_value,
     },
     charts,
     topProducts,
     breakdown: {
       paymentMethods,
       orderTypes,
+    },
+    data_quality_flags: {
+      variant_count_missing_unit_cost: missingCostVariants.size,
+      cost_sourced_from_legacy_inbound: usedLegacyVariantIds.length,
+    },
+    reconciliation: {
+      inbound_receipts_qty: inventoryReconciliation.inbound_receipts_qty,
+      ledger_inbound_events_qty: inventoryReconciliation.ledger_inbound_events_qty,
+      delta: inventoryReconciliation.delta,
+      in_sync: inventoryReconciliation.in_sync,
     },
   };
 };

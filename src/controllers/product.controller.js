@@ -1,8 +1,40 @@
 const productService = require("../services/product.service");
+const fs = require("fs");
+const cloudinary = require("../services/cloudinary.service");
+
+async function hydrateImagesFromBodyAndFiles(body = {}, files = []) {
+  if (typeof body.images === "string") {
+    try {
+      body.images = JSON.parse(body.images);
+    } catch {}
+  }
+
+  body.images = Array.isArray(body.images) ? body.images : [];
+
+  if (!Array.isArray(files) || files.length === 0) {
+    return body;
+  }
+
+  for (const file of files) {
+    let buffer = file.buffer;
+    if (!buffer && file.path) {
+      buffer = fs.readFileSync(file.path);
+    }
+    const result = await cloudinary.uploadBufferToCloudinary(buffer, {
+      folder: "optilens/products",
+      resource_type: "image",
+    });
+    body.images.push(result.secure_url);
+  }
+
+  return body;
+}
+
 async function addVariant(req, res, next) {
   try {
     const { id } = req.params;
-    const data = await productService.addVariant(id, req.body, req.user);
+    const body = await hydrateImagesFromBodyAndFiles(req.body || {}, req.files);
+    const data = await productService.addVariant(id, body, req.user);
     return res.status(201).json(data);
   } catch (error) {
     return next(error);
@@ -143,10 +175,11 @@ async function deleteVariant(req, res, next) {
 async function updateVariant(req, res, next) {
   try {
     const { productId, variantId } = req.params;
+    const body = await hydrateImagesFromBodyAndFiles(req.body || {}, req.files);
     const data = await productService.updateVariant(
       productId,
       variantId,
-      req.body,
+      body,
       req.user,
     );
     return res.status(200).json(data);

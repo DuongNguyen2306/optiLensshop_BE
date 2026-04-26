@@ -2481,6 +2481,21 @@ function getOpenApiSpec() {
           responses: { 200: { description: "OK" } },
         },
       },
+      "/finance/reconciliation/inventory": {
+        get: {
+          tags: ["Finance"],
+          security: [{ bearerAuth: [] }],
+          summary:
+            "Đối soát tồn kho: tổng qty phiếu InboundReceipt COMPLETED vs tổng quantity_delta ledger (inbound/return_restock) trong kỳ",
+          parameters: [
+            { name: "start_date", in: "query", schema: { type: "string", format: "date-time" } },
+            { name: "end_date", in: "query", schema: { type: "string", format: "date-time" } },
+            { name: "startDate", in: "query", schema: { type: "string", format: "date-time" } },
+            { name: "endDate", in: "query", schema: { type: "string", format: "date-time" } },
+          ],
+          responses: { 200: { description: "OK" } },
+        },
+      },
       "/finance/expenses": {
         get: {
           tags: ["Finance"],

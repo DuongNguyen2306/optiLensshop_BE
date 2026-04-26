@@ -8,6 +8,8 @@ const ProductVariant = require("../models/productVariant.schema");
 const Product = require("../models/product.schema");
 const Payment = require("../models/payment.schema");
 const InventoryLedger = require("../models/inventoryLedger.schema");
+const InboundReceipt = require("../models/inboundReceipt.schema");
+const StockInbound = require("../models/stockInbound.schema");
 
 // ─── Business Rule Engine ──────────────────────────────────────────────────────
 
@@ -39,6 +41,184 @@ function resolveRestockDecision({ itemType, productType, orderType, condition })
   }
 
   return { restock: true, reason: "Hàng đủ điều kiện nhập lại kho" };
+}
+
+function todayPrefix() {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  return `${y}${m}${d}`;
+}
+
+/**
+ * Giá nhập gần nhất trước thời điểm hoàn trả (ưu tiên InboundReceipt, thiếu/0 dùng StockInbound legacy).
+ */
+async function getLastImportPriceByVariantBefore(variantIds, beforeDate, session) {
+  if (!Array.isArray(variantIds) || variantIds.length === 0) return new Map();
+  const uniqueStr = [...new Set(variantIds.map((id) => String(id)))];
+  const oids = uniqueStr.map((id) => new mongoose.Types.ObjectId(id));
+
+  const fromInbound = await InboundReceipt.aggregate([
+    {
+      $match: {
+        status: "COMPLETED",
+        completed_at: { $lte: beforeDate },
+      },
+    },
+    { $unwind: "$items" },
+    { $match: { "items.variant_id": { $in: oids } } },
+    { $sort: { completed_at: -1 } },
+    {
+      $group: {
+        _id: "$items.variant_id",
+        import_price: { $first: "$items.import_price" },
+      },
+    },
+  ]).session(session);
+
+  const map = new Map(
+    fromInbound.map((r) => [String(r._id), Number(r.import_price || 0)]),
+  );
+
+  const needLegacy = oids.filter(
+    (oid) => !map.has(String(oid)) || map.get(String(oid)) === 0,
+  );
+  if (needLegacy.length) {
+    const fromLegacy = await StockInbound.aggregate([
+      {
+        $match: {
+          status: "COMPLETED",
+          completed_at: { $lte: beforeDate },
+        },
+      },
+      { $unwind: "$items" },
+      { $match: { "items.variant_id": { $in: needLegacy } } },
+      { $sort: { completed_at: -1 } },
+      {
+        $group: {
+          _id: "$items.variant_id",
+          import_price: { $first: "$items.import_price" },
+        },
+      },
+    ]).session(session);
+    for (const row of fromLegacy) {
+      const k = String(row._id);
+      if (!map.has(k) || map.get(k) === 0) {
+        map.set(k, Number(row.import_price || 0));
+      }
+    }
+  }
+  return map;
+}
+
+async function generateInboundCode(session) {
+  const prefix = `PNK-${todayPrefix()}-`;
+  const latest = await InboundReceipt.findOne({
+    inbound_code: { $regex: `^${prefix}` },
+  })
+    .sort({ inbound_code: -1 })
+    .select("inbound_code")
+    .session(session)
+    .lean();
+
+  const nextSeq = latest
+    ? Number(String(latest.inbound_code).slice(prefix.length) || 0) + 1
+    : 1;
+  return `${prefix}${String(nextSeq).padStart(3, "0")}`;
+}
+
+async function createReturnRestockInboundReceipt({
+  session,
+  actorId,
+  order,
+  returnRequest,
+  restockedItems = [],
+}) {
+  if (!Array.isArray(restockedItems) || restockedItems.length === 0) return null;
+
+  const mergedByVariant = new Map();
+  for (const row of restockedItems) {
+    const key = String(row.variant_id);
+    const current = mergedByVariant.get(key) || {
+      variant_id: row.variant_id,
+      qty_planned: 0,
+      qty_received: 0,
+      import_price: 0,
+    };
+    current.qty_planned += Number(row.quantity || 0);
+    current.qty_received += Number(row.quantity || 0);
+    current.import_price = Number(row.import_price || 0);
+    mergedByVariant.set(key, current);
+  }
+
+  const items = Array.from(mergedByVariant.values());
+  const totalValue = items.reduce(
+    (sum, item) => sum + Number(item.qty_planned || 0) * Number(item.import_price || 0),
+    0,
+  );
+
+  const historyLog = [
+    {
+      action: "CREATE_DRAFT",
+      actor: actorId || null,
+      at: new Date(),
+      note: `Tạo tự động từ return request ${returnRequest._id}`,
+    },
+    {
+      action: "SUBMIT",
+      actor: actorId || null,
+      at: new Date(),
+      note: "Tự động submit khi hoàn tất trả hàng",
+    },
+    {
+      action: "APPROVE",
+      actor: actorId || null,
+      at: new Date(),
+      note: "Tự động approve theo luồng return restock",
+    },
+    {
+      action: "RECEIVE",
+      actor: actorId || null,
+      at: new Date(),
+      note: "Tự động nhận hàng theo return đã kiểm định NEW",
+    },
+    {
+      action: "COMPLETE",
+      actor: actorId || null,
+      at: new Date(),
+      note: "Tự động complete theo luồng hoàn trả hàng",
+    },
+  ];
+
+  const [receipt] = await InboundReceipt.create(
+    [
+      {
+        inbound_code: await generateInboundCode(session),
+        type: "RETURN_RESTOCK",
+        status: "COMPLETED",
+        supplier_name: "CUSTOMER_RETURN",
+        expected_date: null,
+        note: `Auto-created from return request ${returnRequest._id}`,
+        items,
+        total_value: totalValue,
+        reference_orders: [order._id],
+        allocation_summary: [],
+        created_by: actorId,
+        submitted_at: new Date(),
+        approved_by: actorId || null,
+        approved_at: new Date(),
+        received_by: actorId || null,
+        received_at: new Date(),
+        completed_by: actorId || null,
+        completed_at: new Date(),
+        history_log: historyLog,
+      },
+    ],
+    { session },
+  );
+
+  return receipt;
 }
 
 // ─── Customer-facing ───────────────────────────────────────────────────────────
@@ -359,10 +539,18 @@ exports.completeReturn = async (returnId, actorId) => {
     const productsDocs = await Product.find({ _id: { $in: productIds } }).session(session);
     const productMap = new Map(productsDocs.map((p) => [p._id.toString(), p]));
 
+    const asOf = new Date();
+    const restockPriceMap = await getLastImportPriceByVariantBefore(
+      returnRequest.items.map((i) => i.variant_id),
+      asOf,
+      session,
+    );
+
     // ── Xử lý từng dòng trả hàng ────────────────────────────────────────────
     let totalRefundAmount = 0;
     let anyRestocked = false;
     const restockLog = [];
+    const restockedItemsForInbound = [];
 
     for (const returnItem of returnRequest.items) {
       const oi = orderItemMap.get(returnItem.order_item_id.toString());
@@ -396,6 +584,7 @@ exports.completeReturn = async (returnId, actorId) => {
       anyRestocked = true;
       const stockBefore = variant.stock_quantity;
       const stockAfter = stockBefore + returnItem.quantity;
+      const importPrice = Number(restockPriceMap.get(String(returnItem.variant_id)) || 0);
 
       // Cộng kho
       await ProductVariant.findByIdAndUpdate(
@@ -403,6 +592,12 @@ exports.completeReturn = async (returnId, actorId) => {
         { $inc: { stock_quantity: returnItem.quantity } },
         { session, new: true },
       );
+
+      restockedItemsForInbound.push({
+        variant_id: returnItem.variant_id,
+        quantity: returnItem.quantity,
+        import_price: importPrice,
+      });
 
       // Nhật ký kho
       await InventoryLedger.create(
@@ -454,9 +649,29 @@ exports.completeReturn = async (returnId, actorId) => {
     order.status_history.push({ action: finalOrderStatus, actor: actorId });
     await order.save({ session });
 
+    const restockInboundReceipt = await createReturnRestockInboundReceipt({
+      session,
+      actorId,
+      order,
+      returnRequest,
+      restockedItems: restockedItemsForInbound,
+    });
+
     await session.commitTransaction();
 
-    return { returnRequest, restockLog, finalOrderStatus };
+    return {
+      returnRequest,
+      restockLog,
+      finalOrderStatus,
+      restockInboundReceipt: restockInboundReceipt
+        ? {
+            _id: restockInboundReceipt._id,
+            inbound_code: restockInboundReceipt.inbound_code,
+            status: restockInboundReceipt.status,
+            type: restockInboundReceipt.type,
+          }
+        : null,
+    };
   } catch (err) {
     await session.abortTransaction();
     throw err;
