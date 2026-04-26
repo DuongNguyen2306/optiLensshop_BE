@@ -25,7 +25,7 @@ router.use("/finance", require("./finance"));
 router.use("/inbounds", require("./inbound"));
 router.use("/api/ops/orders", require("./ops-order"));
 // Legacy modules (đã thay thế bằng /inbounds):
-// router.use("/inventory", require("./inventory"));
+router.use("/inventory", require("./inventory"));
 // router.use("/api/ops/inbound", require("./stock-inbound"));
 router.use("/api/admin/analytics", require("./admin-analytics"));
 router.use("/returns", require("./returns"));
