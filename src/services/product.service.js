@@ -49,7 +49,10 @@ async function addVariant(productId, payload, user) {
   const product = await Product.findById(productId);
   if (!product) throw createHttpError("Không tìm thấy sản phẩm", 404);
 
-  if (payload.stock_quantity !== undefined && Number(payload.stock_quantity) > 0) {
+  if (
+    payload.stock_quantity !== undefined &&
+    Number(payload.stock_quantity) > 0
+  ) {
     throw createHttpError(
       "Không cho phép set stock_quantity khi tạo biến thể. Vui lòng tạo phiếu nhập kho.",
       400,
@@ -111,14 +114,14 @@ function buildSlug(name) {
 async function listProducts(query = {}) {
   const page = toPositiveInt(query.page, 1);
   const limit = toPositiveInt(query.limit, 12);
+  const filters = { is_active: true };
   if (query.type) {
     if (!["frame", "lens", "accessory"].includes(query.type)) {
       throw createHttpError("type không hợp lệ", 400);
     }
+    filters.type = query.type;
   }
   const skip = (page - 1) * limit;
-
-  const filters = { is_active: true };
 
   if (query.search) {
     const keyword = String(query.search).trim();
@@ -452,7 +455,9 @@ async function createProduct(payload, user) {
   return {
     message: "Tạo sản phẩm thành công",
     product,
-    variants: createdVariants.map((v) => normalizeVariantResponse(v.toObject())),
+    variants: createdVariants.map((v) =>
+      normalizeVariantResponse(v.toObject()),
+    ),
   };
 }
 
@@ -499,7 +504,8 @@ async function deleteProduct(id, user) {
     "stock_quantity reserved_quantity",
   );
   const hasStock = variants.some(
-    (v) => Number(v.stock_quantity || 0) > 0 || Number(v.reserved_quantity || 0) > 0,
+    (v) =>
+      Number(v.stock_quantity || 0) > 0 || Number(v.reserved_quantity || 0) > 0,
   );
 
   if (hasStock) {
