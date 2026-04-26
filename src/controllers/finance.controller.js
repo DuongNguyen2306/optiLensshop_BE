@@ -127,3 +127,12 @@ exports.getInventoryReconciliation = async (req, res) => {
     res.status(400).json({ message: err.message });
   }
 };
+
+exports.getAdminFinanceAnalyticsClean = async (req, res) => {
+  try {
+    const data = await financeService.getAdminFinanceAnalyticsClean(req.query || {});
+    res.json(data);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+};
