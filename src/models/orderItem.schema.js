@@ -36,8 +36,8 @@ const orderItemSchema = new Schema({
   /** Loại sản phẩm: frame / lens — dùng để xác định trừ stock timing */
   item_type: {
     type: String,
-    enum: ["frame", "lens", null],
-    default: null,
+    enum: ["frame", "lens", "accessory"],
+    default: "frame",
   },
 });
 
