@@ -45,8 +45,8 @@ function assertOpsEligibleOrder(order) {
 
 async function deductStockIfNeededOnShipped(order) {
   if (order.status !== ORDER_STATUS.SHIPPED) return;
+  // Tránh trừ kho 2 lần khi đã trừ ở lần shipped trước.
   if (order.stock_deducted_at) return;
-  if (order.order_type === "pre_order") return;
 
   const items = await OrderItem.find({ order_id: order._id }).select(
     "variant_id quantity",
