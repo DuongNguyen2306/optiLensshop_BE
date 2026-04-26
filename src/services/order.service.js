@@ -12,6 +12,8 @@ const { addressToString } = require("../utils/address");
 const { sanitizeLensParams } = require("../utils/lens-params");
 const User = require("../models/user.schema");
 const { getPreorderDepositRate } = require("./systemSetting.service");
+const InboundReceipt = require("../models/inboundReceipt.schema");
+const inboundService = require("./inbound.service");
 const {
   ORDER_STATUS,
   ORDER_TRANSITIONS,
@@ -1115,6 +1117,40 @@ function getTransitionMapByOrderType(orderType) {
   return ORDER_TRANSITIONS[orderType] || ORDER_TRANSITIONS.stock;
 }
 
+async function ensurePreorderInboundForApproval(order, actorId) {
+  if (!order || order.order_type !== "pre_order") return null;
+
+  const existing = await InboundReceipt.findOne({
+    reference_orders: order._id,
+    status: { $in: ["DRAFT", "PENDING_APPROVAL", "APPROVED", "RECEIVED"] },
+  })
+    .sort({ createdAt: -1 })
+    .select("_id status inbound_code")
+    .lean();
+  if (existing) return existing;
+
+  const orderItems = await OrderItem.find({ order_id: order._id }).select(
+    "variant_id quantity unit_price",
+  );
+  if (!orderItems.length) return null;
+
+  const payload = {
+    type: "PURCHASE",
+    supplier_name: "AUTO_PREORDER",
+    note: `Tự động tạo từ đơn pre_order ${order._id} khi Sales xác nhận đơn`,
+    reference_orders: [order._id],
+    items: orderItems.map((item) => ({
+      variant_id: item.variant_id,
+      qty_planned: Number(item.quantity || 0),
+      import_price: Number(item.unit_price || 0),
+    })),
+  };
+
+  const created = await inboundService.createDraft(payload, { _id: actorId });
+  await inboundService.submit(created._id, { _id: actorId });
+  return { _id: created._id, status: "PENDING_APPROVAL" };
+}
+
 function assertCanTransition(order, nextStatus) {
   const map = getTransitionMapByOrderType(order.order_type);
   const allowed = map[order.status] || [];
@@ -1128,9 +1164,8 @@ function assertCanTransition(order, nextStatus) {
 
 async function deductStockIfNeededOnShipped(order) {
   if (order.status !== ORDER_STATUS.SHIPPED) return;
+  // Tránh trừ kho 2 lần khi đã trừ ở lần shipped trước.
   if (order.stock_deducted_at) return;
-  // Pre-order: đặt khi không đủ tồn — không trừ stock_quantity qua luồng đơn (tránh lỗi khi kho vẫn 0).
-  if (order.order_type === "pre_order") return;
 
   const items = await OrderItem.find({ order_id: order._id }).select(
     "variant_id quantity",
@@ -1231,6 +1266,7 @@ exports.confirmOrder = async (orderId, userId) => {
   assertCanTransition(order, ORDER_STATUS.CONFIRMED);
   order.status = ORDER_STATUS.CONFIRMED;
   pushStatusHistory(order, ORDER_STATUS.CONFIRMED.toUpperCase(), userId);
+  await ensurePreorderInboundForApproval(order, userId);
   await order.save();
   return order;
 };
