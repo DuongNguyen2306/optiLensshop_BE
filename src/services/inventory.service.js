@@ -1,7 +1,10 @@
 const mongoose = require("mongoose");
 const ProductVariant = require("../models/productVariant.schema");
 const OrderItem = require("../models/orderItem.schema");
+const InventoryReceipt = require("../models/inventoryReceipt.schema");
+const InventoryLedger = require("../models/inventoryLedger.schema");
 const { INVENTORY_PLACEMENT } = require("../constants/order-status");
+const { createHttpError } = require("../utils/create-http-error");
 
 function variantKey(id) {
   if (!id) return "";
@@ -154,11 +157,212 @@ async function assertMaterialsAvailableForPreOrder(session, orderId) {
   return;
 }
 
+/* -------------------------------------------------------------------------- */
+/*  Legacy /inventory: phiếu nhập đơn-variant (draft → confirmed)             */
+/* -------------------------------------------------------------------------- */
+
+function ensureValidObjectId(id, label = "id") {
+  if (!id || !mongoose.Types.ObjectId.isValid(id)) {
+    throw createHttpError(`${label} không hợp lệ`, 400);
+  }
+}
+
+async function createReceipt(payload = {}, actor) {
+  if (!actor || !actor._id) {
+    throw createHttpError("Thiếu thông tin người tạo", 401);
+  }
+
+  const { variant_id, qty_in, unit_cost, supplier_name, note } = payload;
+  ensureValidObjectId(variant_id, "variant_id");
+
+  const qty = Number(qty_in);
+  if (!Number.isFinite(qty) || qty < 1) {
+    throw createHttpError("qty_in phải >= 1", 400);
+  }
+
+  const cost = unit_cost === undefined ? 0 : Number(unit_cost);
+  if (!Number.isFinite(cost) || cost < 0) {
+    throw createHttpError("unit_cost không hợp lệ", 400);
+  }
+
+  const variant = await ProductVariant.findById(variant_id).select("_id");
+  if (!variant) {
+    throw createHttpError("Không tìm thấy biến thể sản phẩm", 404);
+  }
+
+  const receipt = await InventoryReceipt.create({
+    variant_id,
+    qty_in: qty,
+    unit_cost: cost,
+    supplier_name: supplier_name || "",
+    note: note || "",
+    status: "draft",
+    created_by: actor._id,
+  });
+
+  return receipt.toObject();
+}
+
+async function confirmReceipt(id, actor) {
+  ensureValidObjectId(id, "Receipt id");
+  if (!actor || !actor._id) {
+    throw createHttpError("Thiếu thông tin người xác nhận", 401);
+  }
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    const receipt = await InventoryReceipt.findById(id).session(session);
+    if (!receipt) throw createHttpError("Không tìm thấy phiếu nhập", 404);
+    if (receipt.status !== "draft") {
+      throw createHttpError(
+        "Chỉ phiếu draft mới được xác nhận",
+        400,
+      );
+    }
+
+    const variantBefore = await ProductVariant.findById(receipt.variant_id)
+      .select("stock_quantity reserved_quantity")
+      .session(session);
+    if (!variantBefore) {
+      throw createHttpError("Không tìm thấy biến thể sản phẩm", 404);
+    }
+
+    const stockBefore = Number(variantBefore.stock_quantity || 0);
+    const reservedBefore = Number(variantBefore.reserved_quantity || 0);
+    const qty = Number(receipt.qty_in || 0);
+
+    await ProductVariant.updateOne(
+      { _id: receipt.variant_id },
+      { $inc: { stock_quantity: qty } },
+      { session },
+    );
+
+    await InventoryLedger.create(
+      [
+        {
+          variant_id: receipt.variant_id,
+          event_type: "receipt_confirmed",
+          quantity_delta: qty,
+          stock_before: stockBefore,
+          stock_after: stockBefore + qty,
+          reserved_before: reservedBefore,
+          reserved_after: reservedBefore,
+          note: `Xác nhận phiếu nhập ${receipt._id}`,
+          ref_type: "inventory_receipt",
+          ref_id: receipt._id,
+          created_by: actor._id,
+        },
+      ],
+      { session },
+    );
+
+    receipt.status = "confirmed";
+    receipt.confirmed_by = actor._id;
+    receipt.confirmed_at = new Date();
+    await receipt.save({ session });
+
+    await session.commitTransaction();
+    return receipt.toObject();
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
+  }
+}
+
+async function listReceipts(query = {}) {
+  const page = Math.max(1, Number(query.page || 1));
+  const pageSize = Math.max(1, Math.min(100, Number(query.pageSize || 20)));
+  const skip = (page - 1) * pageSize;
+
+  const filter = {};
+  if (query.status) {
+    const status = String(query.status);
+    if (["draft", "confirmed", "cancelled"].includes(status)) {
+      filter.status = status;
+    }
+  }
+  if (query.variant_id && mongoose.Types.ObjectId.isValid(query.variant_id)) {
+    filter.variant_id = query.variant_id;
+  }
+  if (query.supplier_name) {
+    filter.supplier_name = {
+      $regex: String(query.supplier_name),
+      $options: "i",
+    };
+  }
+
+  const [data, total] = await Promise.all([
+    InventoryReceipt.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(pageSize)
+      .populate("variant_id", "sku product_id stock_quantity reserved_quantity")
+      .populate("created_by", "email role profile.full_name")
+      .populate("confirmed_by", "email role profile.full_name")
+      .lean(),
+    InventoryReceipt.countDocuments(filter),
+  ]);
+
+  return {
+    data,
+    pagination: {
+      page,
+      pageSize,
+      total,
+      totalPages: Math.ceil(total / pageSize) || 1,
+    },
+  };
+}
+
+async function listLedger(query = {}) {
+  const page = Math.max(1, Number(query.page || 1));
+  const pageSize = Math.max(1, Math.min(200, Number(query.pageSize || 20)));
+  const skip = (page - 1) * pageSize;
+
+  const filter = {};
+  if (query.variant_id && mongoose.Types.ObjectId.isValid(query.variant_id)) {
+    filter.variant_id = query.variant_id;
+  }
+  if (query.event_type) filter.event_type = String(query.event_type);
+  if (query.ref_type) filter.ref_type = String(query.ref_type);
+  if (query.ref_id && mongoose.Types.ObjectId.isValid(query.ref_id)) {
+    filter.ref_id = query.ref_id;
+  }
+
+  const [data, total] = await Promise.all([
+    InventoryLedger.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(pageSize)
+      .populate("variant_id", "sku product_id")
+      .populate("created_by", "email role profile.full_name")
+      .lean(),
+    InventoryLedger.countDocuments(filter),
+  ]);
+
+  return {
+    data,
+    pagination: {
+      page,
+      pageSize,
+      total,
+      totalPages: Math.ceil(total / pageSize) || 1,
+    },
+  };
+}
+
 module.exports = {
   applyOnCheckout,
   releaseOnCancel,
   applyFulfillmentStockOut,
   assertMaterialsAvailableForPreOrder,
   aggregateVariantQuantities,
+  createReceipt,
+  confirmReceipt,
+  listReceipts,
+  listLedger,
   INVENTORY_PLACEMENT,
 };
