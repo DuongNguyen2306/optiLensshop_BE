@@ -48,7 +48,7 @@ const returnItemSchema = new Schema(
     /** Loại sản phẩm dòng này (frame / lens / null = accessory) - copy từ OrderItem */
     item_type: {
       type: String,
-      enum: ["frame", "lens", null],
+      enum: ["frame", "lens", "accessory"],
       default: null,
     },
   },
@@ -91,7 +91,12 @@ const returnRequestSchema = new Schema(
 
     status: {
       type: String,
-      enum: [...Object.values(RETURN_STATUS), "COMPLETED", "RECEIVED", "PROCESSING"],
+      enum: [
+        ...Object.values(RETURN_STATUS),
+        "COMPLETED",
+        "RECEIVED",
+        "PROCESSING",
+      ],
       default: RETURN_STATUS.PENDING,
       index: true,
     },
