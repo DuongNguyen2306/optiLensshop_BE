@@ -37,7 +37,7 @@ const orderItemSchema = new Schema({
   item_type: {
     type: String,
     enum: ["frame", "lens", "accessory"],
-    default: "frame",
+    default: null,
   },
 });
 

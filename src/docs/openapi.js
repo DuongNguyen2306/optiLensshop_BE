@@ -89,7 +89,10 @@ function getOpenApiSpec() {
         name: "order_type",
         in: "query",
         required: false,
-        schema: { type: "string", enum: ["stock", "pre_order", "prescription"] },
+        schema: {
+          type: "string",
+          enum: ["stock", "pre_order", "prescription"],
+        },
         description: "Lọc theo loại đơn hàng (`Order.order_type`).",
       },
     ];
@@ -129,9 +132,19 @@ function getOpenApiSpec() {
         description:
           "Thu chi & báo cáo doanh thu (manager, admin). Chi phí nhập tay; doanh thu lấy từ Order/Payment/ReturnRequest.",
       },
-      { name: "Ops Orders", description: "Luồng Ops: gia công, đóng gói, giao hàng" },
-      { name: "Returns – Customer", description: "Khách hàng gửi & tra cứu yêu cầu trả hàng" },
-      { name: "Returns – Admin", description: "Admin/Ops xử lý yêu cầu trả hàng (nhận, hoàn tất, từ chối)" },
+      {
+        name: "Ops Orders",
+        description: "Luồng Ops: gia công, đóng gói, giao hàng",
+      },
+      {
+        name: "Returns – Customer",
+        description: "Khách hàng gửi & tra cứu yêu cầu trả hàng",
+      },
+      {
+        name: "Returns – Admin",
+        description:
+          "Admin/Ops xử lý yêu cầu trả hàng (nhận, hoàn tất, từ chối)",
+      },
     ],
     components: {
       securitySchemes: {
@@ -278,15 +291,18 @@ function getOpenApiSpec() {
             price: { type: "number" },
             stock_quantity: {
               type: "integer",
-              description: "Tồn kho thực tế (on-hand). Read-only từ phía client.",
+              description:
+                "Tồn kho thực tế (on-hand). Read-only từ phía client.",
             },
             reserved_quantity: {
               type: "integer",
-              description: "Số lượng đang giữ chỗ cho đơn. Read-only từ phía client.",
+              description:
+                "Số lượng đang giữ chỗ cho đơn. Read-only từ phía client.",
             },
             available_quantity: {
               type: "integer",
-              description: "Số có thể bán = max(0, stock_quantity - reserved_quantity).",
+              description:
+                "Số có thể bán = max(0, stock_quantity - reserved_quantity).",
             },
             images: { type: "array", items: { type: "string" } },
             color: { type: "string" },
@@ -401,7 +417,8 @@ function getOpenApiSpec() {
           properties: {
             order_item_id: {
               type: "string",
-              description: "ObjectId của dòng sản phẩm trong đơn (OrderItem._id)",
+              description:
+                "ObjectId của dòng sản phẩm trong đơn (OrderItem._id)",
             },
             quantity: {
               type: "integer",
@@ -422,7 +439,8 @@ function getOpenApiSpec() {
             return_reason: {
               type: "string",
               minLength: 10,
-              description: "Mô tả lý do trả hàng (bắt buộc, tối thiểu 10 ký tự)",
+              description:
+                "Mô tả lý do trả hàng (bắt buộc, tối thiểu 10 ký tự)",
             },
             reason_category: {
               type: "string",
@@ -458,12 +476,21 @@ function getOpenApiSpec() {
           type: "object",
           properties: {
             _id: { type: "string" },
-            order_id: { type: "string", description: "Order ID hoặc object Order đã populate" },
+            order_id: {
+              type: "string",
+              description: "Order ID hoặc object Order đã populate",
+            },
             requested_by: { type: "string", description: "User ID khách hàng" },
             return_reason: { type: "string" },
             reason_category: {
               type: "string",
-              enum: ["damaged_on_arrival", "wrong_item", "changed_mind", "defective", "other"],
+              enum: [
+                "damaged_on_arrival",
+                "wrong_item",
+                "changed_mind",
+                "defective",
+                "other",
+              ],
             },
             items: {
               type: "array",
@@ -473,7 +500,11 @@ function getOpenApiSpec() {
                   order_item_id: { type: "string" },
                   variant_id: { type: "string" },
                   quantity: { type: "integer" },
-                  item_type: { type: "string", enum: ["frame", "lens"], nullable: true },
+                  item_type: {
+                    type: "string",
+                    enum: ["frame", "lens", "accessory"],
+                    nullable: true,
+                  },
                 },
               },
             },
@@ -498,9 +529,19 @@ function getOpenApiSpec() {
               nullable: true,
               description: "Tình trạng hàng do Ops đánh giá khi nhận về",
             },
-            is_restocked: { type: "boolean", description: "Đã cộng lại vào kho chưa" },
-            refund_amount: { type: "number", description: "Số tiền thực tế hoàn cho khách (VND)" },
-            handled_by: { type: "string", nullable: true, description: "User ID Ops/Admin xử lý" },
+            is_restocked: {
+              type: "boolean",
+              description: "Đã cộng lại vào kho chưa",
+            },
+            refund_amount: {
+              type: "number",
+              description: "Số tiền thực tế hoàn cho khách (VND)",
+            },
+            handled_by: {
+              type: "string",
+              nullable: true,
+              description: "User ID Ops/Admin xử lý",
+            },
             rejected_reason: { type: "string", nullable: true },
             history_log: {
               type: "array",
@@ -545,7 +586,10 @@ function getOpenApiSpec() {
             variant_id: { type: "string" },
             quantity: { type: "integer" },
             restock: { type: "boolean" },
-            reason: { type: "string", description: "Giải thích quyết định restock/no-restock" },
+            reason: {
+              type: "string",
+              description: "Giải thích quyết định restock/no-restock",
+            },
           },
         },
 
@@ -590,16 +634,27 @@ function getOpenApiSpec() {
                 "other",
               ],
             },
-            occurred_at: { type: "string", format: "date-time", description: "Ngày phát sinh chứng từ" },
+            occurred_at: {
+              type: "string",
+              format: "date-time",
+              description: "Ngày phát sinh chứng từ",
+            },
             description: { type: "string", maxLength: 2000 },
-            reference_no: { type: "string", maxLength: 100, description: "Số hóa đơn / phiếu chi" },
+            reference_no: {
+              type: "string",
+              maxLength: 100,
+              description: "Số hóa đơn / phiếu chi",
+            },
           },
         },
 
         VoidExpenseBody: {
           type: "object",
           properties: {
-            void_reason: { type: "string", description: "Lý do hủy phiếu (tùy chọn)" },
+            void_reason: {
+              type: "string",
+              description: "Lý do hủy phiếu (tùy chọn)",
+            },
           },
         },
 
@@ -900,7 +955,9 @@ function getOpenApiSpec() {
             required: true,
             content: {
               "application/json": {
-                schema: { $ref: "#/components/schemas/PreorderDepositRateBody" },
+                schema: {
+                  $ref: "#/components/schemas/PreorderDepositRateBody",
+                },
               },
             },
           },
@@ -1146,7 +1203,8 @@ function getOpenApiSpec() {
       "/variants": {
         get: {
           tags: ["Products"],
-          summary: "Danh sách variants theo loại sản phẩm (frame/lens) và tìm kiếm",
+          summary:
+            "Danh sách variants theo loại sản phẩm (frame/lens) và tìm kiếm",
           description:
             "Mỗi item trả thêm `available_quantity = max(0, stock_quantity - reserved_quantity)`. Xem `ProductVariantResponse`.",
           parameters: [
@@ -1679,7 +1737,8 @@ function getOpenApiSpec() {
                             type: "string",
                             nullable: true,
                             example: "GHN",
-                            description: "Đơn vị vận chuyển (null nếu chưa nhập)",
+                            description:
+                              "Đơn vị vận chuyển (null nếu chưa nhập)",
                           },
                           tracking_code: {
                             type: "string",
@@ -1695,44 +1754,75 @@ function getOpenApiSpec() {
                                 _id: { type: "string" },
                                 variant_id: {
                                   type: "object",
-                                  description: "Thông tin variant (đã populate)",
+                                  description:
+                                    "Thông tin variant (đã populate)",
                                   properties: {
                                     _id: { type: "string" },
                                     sku: { type: "string" },
                                     price: { type: "number" },
                                     color: { type: "string" },
                                     size: { type: "string" },
-                                    images: { type: "array", items: { type: "string" } },
+                                    images: {
+                                      type: "array",
+                                      items: { type: "string" },
+                                    },
                                     product_id: {
                                       type: "object",
                                       properties: {
                                         _id: { type: "string" },
                                         name: { type: "string" },
-                                        type: { type: "string", enum: ["frame", "lens", "accessory"] },
+                                        type: {
+                                          type: "string",
+                                          enum: ["frame", "lens", "accessory"],
+                                        },
                                         slug: { type: "string" },
-                                        images: { type: "array", items: { type: "string" } },
+                                        images: {
+                                          type: "array",
+                                          items: { type: "string" },
+                                        },
                                       },
                                     },
                                   },
                                 },
                                 quantity: { type: "integer" },
                                 unit_price: { type: "number" },
-                                item_type: { type: "string", enum: ["frame", "lens"], nullable: true },
+                                item_type: {
+                                  type: "string",
+                                  enum: ["frame", "lens", "accessory"],
+                                  nullable: true,
+                                },
                                 lens_params: { type: "object", nullable: true },
-                                product_name: { type: "string", nullable: true, description: "Shortcut: tên sản phẩm từ variant.product_id.name" },
-                                product_type: { type: "string", nullable: true, description: "Shortcut: loại sản phẩm (frame/lens/accessory)" },
-                                product_slug: { type: "string", nullable: true },
+                                product_name: {
+                                  type: "string",
+                                  nullable: true,
+                                  description:
+                                    "Shortcut: tên sản phẩm từ variant.product_id.name",
+                                },
+                                product_type: {
+                                  type: "string",
+                                  nullable: true,
+                                  description:
+                                    "Shortcut: loại sản phẩm (frame/lens/accessory)",
+                                },
+                                product_slug: {
+                                  type: "string",
+                                  nullable: true,
+                                },
                                 images: {
                                   type: "array",
                                   items: { type: "string" },
-                                  description: "Ảnh hiển thị: ưu tiên ảnh variant, fallback sang ảnh product",
+                                  description:
+                                    "Ảnh hiển thị: ưu tiên ảnh variant, fallback sang ảnh product",
                                 },
                               },
                             },
                           },
                           payment: { type: "object", nullable: true },
                           prescriptions: { type: "array", nullable: true },
-                          status_history: { type: "array", items: { type: "object" } },
+                          status_history: {
+                            type: "array",
+                            items: { type: "object" },
+                          },
                         },
                       },
                     },
@@ -1740,7 +1830,10 @@ function getOpenApiSpec() {
                 },
               },
             },
-            403: { description: "Không có quyền xem đơn này (customer xem đơn người khác)" },
+            403: {
+              description:
+                "Không có quyền xem đơn này (customer xem đơn người khác)",
+            },
             404: { description: "Không tìm thấy đơn hàng" },
           },
         },
@@ -1776,7 +1869,10 @@ function getOpenApiSpec() {
                   schema: {
                     type: "object",
                     properties: {
-                      message: { type: "string", example: "Đã lưu thông tin vận chuyển" },
+                      message: {
+                        type: "string",
+                        example: "Đã lưu thông tin vận chuyển",
+                      },
                       order: { type: "object" },
                     },
                   },
@@ -1994,7 +2090,9 @@ function getOpenApiSpec() {
                     type: "object",
                     properties: {
                       message: { type: "string" },
-                      returnRequest: { $ref: "#/components/schemas/ReturnRequest" },
+                      returnRequest: {
+                        $ref: "#/components/schemas/ReturnRequest",
+                      },
                     },
                   },
                 },
@@ -2018,7 +2116,8 @@ function getOpenApiSpec() {
           tags: ["Returns – Customer"],
           security: [{ bearerAuth: [] }],
           summary: "Danh sách yêu cầu trả hàng của tôi",
-          description: "Trả về các yêu cầu trả hàng do khách hàng đang đăng nhập tạo ra.",
+          description:
+            "Trả về các yêu cầu trả hàng do khách hàng đang đăng nhập tạo ra.",
           parameters: [
             {
               name: "status",
@@ -2174,7 +2273,9 @@ function getOpenApiSpec() {
                   schema: {
                     type: "object",
                     properties: {
-                      returnRequest: { $ref: "#/components/schemas/ReturnRequest" },
+                      returnRequest: {
+                        $ref: "#/components/schemas/ReturnRequest",
+                      },
                     },
                   },
                 },
@@ -2200,7 +2301,10 @@ function getOpenApiSpec() {
                 schema: {
                   type: "object",
                   properties: {
-                    note: { type: "string", description: "Ghi chú nội bộ (tùy chọn)" },
+                    note: {
+                      type: "string",
+                      description: "Ghi chú nội bộ (tùy chọn)",
+                    },
                   },
                 },
               },
@@ -2215,7 +2319,9 @@ function getOpenApiSpec() {
                     type: "object",
                     properties: {
                       message: { type: "string" },
-                      returnRequest: { $ref: "#/components/schemas/ReturnRequest" },
+                      returnRequest: {
+                        $ref: "#/components/schemas/ReturnRequest",
+                      },
                     },
                   },
                 },
@@ -2258,14 +2364,17 @@ function getOpenApiSpec() {
                     type: "object",
                     properties: {
                       message: { type: "string" },
-                      returnRequest: { $ref: "#/components/schemas/ReturnRequest" },
+                      returnRequest: {
+                        $ref: "#/components/schemas/ReturnRequest",
+                      },
                     },
                   },
                 },
               },
             },
             400: {
-              description: "Lỗi — trạng thái không hợp lệ hoặc condition không đúng enum",
+              description:
+                "Lỗi — trạng thái không hợp lệ hoặc condition không đúng enum",
               content: {
                 "application/json": {
                   schema: { $ref: "#/components/schemas/ErrorResponse" },
@@ -2293,12 +2402,15 @@ function getOpenApiSpec() {
               description: "Đã hoàn tiền",
               content: {
                 "application/json": {
-                  schema: { $ref: "#/components/schemas/CompleteReturnResponse" },
+                  schema: {
+                    $ref: "#/components/schemas/CompleteReturnResponse",
+                  },
                 },
               },
             },
             400: {
-              description: "Lỗi — trạng thái không phải INSPECTING, hoặc chưa ghi condition_at_receipt",
+              description:
+                "Lỗi — trạng thái không phải INSPECTING, hoặc chưa ghi condition_at_receipt",
               content: {
                 "application/json": {
                   schema: { $ref: "#/components/schemas/ErrorResponse" },
@@ -2315,14 +2427,17 @@ function getOpenApiSpec() {
           tags: ["Returns – Admin"],
           security: [{ bearerAuth: [] }],
           summary: "Alias: hoàn tiền (giống PATCH /refund)",
-          description: "Giống `PATCH /api/admin/returns/{id}/refund`. **Manager / Admin**.",
+          description:
+            "Giống `PATCH /api/admin/returns/{id}/refund`. **Manager / Admin**.",
           parameters: [objectIdParam("id", "ReturnRequest ID")],
           responses: {
             200: {
               description: "Đã hoàn tiền",
               content: {
                 "application/json": {
-                  schema: { $ref: "#/components/schemas/CompleteReturnResponse" },
+                  schema: {
+                    $ref: "#/components/schemas/CompleteReturnResponse",
+                  },
                 },
               },
             },
@@ -2355,7 +2470,8 @@ function getOpenApiSpec() {
               "application/json": {
                 schema: { $ref: "#/components/schemas/RejectReturnBody" },
                 example: {
-                  rejected_reason: "Sản phẩm có dấu hiệu đã qua sử dụng, không đủ điều kiện trả",
+                  rejected_reason:
+                    "Sản phẩm có dấu hiệu đã qua sử dụng, không đủ điều kiện trả",
                 },
               },
             },
@@ -2369,14 +2485,17 @@ function getOpenApiSpec() {
                     type: "object",
                     properties: {
                       message: { type: "string" },
-                      returnRequest: { $ref: "#/components/schemas/ReturnRequest" },
+                      returnRequest: {
+                        $ref: "#/components/schemas/ReturnRequest",
+                      },
                     },
                   },
                 },
               },
             },
             400: {
-              description: "Lỗi — trạng thái không hợp lệ hoặc thiếu lý do từ chối",
+              description:
+                "Lỗi — trạng thái không hợp lệ hoặc thiếu lý do từ chối",
               content: {
                 "application/json": {
                   schema: { $ref: "#/components/schemas/ErrorResponse" },
@@ -2409,7 +2528,10 @@ function getOpenApiSpec() {
               description: "Mặc định: hiện tại",
             },
           ],
-          responses: { 200: { description: "OK" }, 400: { description: "Bad request" } },
+          responses: {
+            200: { description: "OK" },
+            400: { description: "Bad request" },
+          },
         },
       },
       "/finance/revenue/breakdown": {
@@ -2418,8 +2540,16 @@ function getOpenApiSpec() {
           security: [{ bearerAuth: [] }],
           summary: "Chi tiết doanh thu (payment × status, đơn × status)",
           parameters: [
-            { name: "start_date", in: "query", schema: { type: "string", format: "date-time" } },
-            { name: "end_date", in: "query", schema: { type: "string", format: "date-time" } },
+            {
+              name: "start_date",
+              in: "query",
+              schema: { type: "string", format: "date-time" },
+            },
+            {
+              name: "end_date",
+              in: "query",
+              schema: { type: "string", format: "date-time" },
+            },
           ],
           responses: { 200: { description: "OK" } },
         },
@@ -2430,12 +2560,24 @@ function getOpenApiSpec() {
           security: [{ bearerAuth: [] }],
           summary: "Dòng tiền (tiền vào vs chi theo bucket)",
           parameters: [
-            { name: "start_date", in: "query", schema: { type: "string", format: "date-time" } },
-            { name: "end_date", in: "query", schema: { type: "string", format: "date-time" } },
+            {
+              name: "start_date",
+              in: "query",
+              schema: { type: "string", format: "date-time" },
+            },
+            {
+              name: "end_date",
+              in: "query",
+              schema: { type: "string", format: "date-time" },
+            },
             {
               name: "group_by",
               in: "query",
-              schema: { type: "string", enum: ["day", "week", "month"], default: "day" },
+              schema: {
+                type: "string",
+                enum: ["day", "week", "month"],
+                default: "day",
+              },
             },
           ],
           responses: { 200: { description: "OK" } },
@@ -2445,12 +2587,29 @@ function getOpenApiSpec() {
         get: {
           tags: ["Finance"],
           security: [{ bearerAuth: [] }],
-          summary: "Danh sách đơn ghi nhận doanh thu (delivered/completed) trong kỳ",
+          summary:
+            "Danh sách đơn ghi nhận doanh thu (delivered/completed) trong kỳ",
           parameters: [
-            { name: "start_date", in: "query", schema: { type: "string", format: "date-time" } },
-            { name: "end_date", in: "query", schema: { type: "string", format: "date-time" } },
-            { name: "page", in: "query", schema: { type: "integer", default: 1 } },
-            { name: "pageSize", in: "query", schema: { type: "integer", default: 20 } },
+            {
+              name: "start_date",
+              in: "query",
+              schema: { type: "string", format: "date-time" },
+            },
+            {
+              name: "end_date",
+              in: "query",
+              schema: { type: "string", format: "date-time" },
+            },
+            {
+              name: "page",
+              in: "query",
+              schema: { type: "integer", default: 1 },
+            },
+            {
+              name: "pageSize",
+              in: "query",
+              schema: { type: "integer", default: 20 },
+            },
           ],
           responses: { 200: { description: "OK" } },
         },
@@ -2461,8 +2620,16 @@ function getOpenApiSpec() {
           security: [{ bearerAuth: [] }],
           summary: "Danh sách hoàn tiền đã hoàn tất trong kỳ",
           parameters: [
-            { name: "start_date", in: "query", schema: { type: "string", format: "date-time" } },
-            { name: "end_date", in: "query", schema: { type: "string", format: "date-time" } },
+            {
+              name: "start_date",
+              in: "query",
+              schema: { type: "string", format: "date-time" },
+            },
+            {
+              name: "end_date",
+              in: "query",
+              schema: { type: "string", format: "date-time" },
+            },
             { name: "page", in: "query", schema: { type: "integer" } },
             { name: "pageSize", in: "query", schema: { type: "integer" } },
           ],
@@ -2475,8 +2642,16 @@ function getOpenApiSpec() {
           security: [{ bearerAuth: [] }],
           summary: "Tổng chi phí theo danh mục trong kỳ",
           parameters: [
-            { name: "start_date", in: "query", schema: { type: "string", format: "date-time" } },
-            { name: "end_date", in: "query", schema: { type: "string", format: "date-time" } },
+            {
+              name: "start_date",
+              in: "query",
+              schema: { type: "string", format: "date-time" },
+            },
+            {
+              name: "end_date",
+              in: "query",
+              schema: { type: "string", format: "date-time" },
+            },
           ],
           responses: { 200: { description: "OK" } },
         },
@@ -2488,10 +2663,26 @@ function getOpenApiSpec() {
           summary:
             "Đối soát tồn kho: tổng qty phiếu InboundReceipt COMPLETED vs tổng quantity_delta ledger (inbound/return_restock) trong kỳ",
           parameters: [
-            { name: "start_date", in: "query", schema: { type: "string", format: "date-time" } },
-            { name: "end_date", in: "query", schema: { type: "string", format: "date-time" } },
-            { name: "startDate", in: "query", schema: { type: "string", format: "date-time" } },
-            { name: "endDate", in: "query", schema: { type: "string", format: "date-time" } },
+            {
+              name: "start_date",
+              in: "query",
+              schema: { type: "string", format: "date-time" },
+            },
+            {
+              name: "end_date",
+              in: "query",
+              schema: { type: "string", format: "date-time" },
+            },
+            {
+              name: "startDate",
+              in: "query",
+              schema: { type: "string", format: "date-time" },
+            },
+            {
+              name: "endDate",
+              in: "query",
+              schema: { type: "string", format: "date-time" },
+            },
           ],
           responses: { 200: { description: "OK" } },
         },
@@ -2502,12 +2693,24 @@ function getOpenApiSpec() {
           security: [{ bearerAuth: [] }],
           summary: "Danh sách phiếu chi",
           parameters: [
-            { name: "start_date", in: "query", schema: { type: "string", format: "date-time" } },
-            { name: "end_date", in: "query", schema: { type: "string", format: "date-time" } },
+            {
+              name: "start_date",
+              in: "query",
+              schema: { type: "string", format: "date-time" },
+            },
+            {
+              name: "end_date",
+              in: "query",
+              schema: { type: "string", format: "date-time" },
+            },
             {
               name: "status",
               in: "query",
-              schema: { type: "string", enum: ["active", "voided", "all"], default: "active" },
+              schema: {
+                type: "string",
+                enum: ["active", "voided", "all"],
+                default: "active",
+              },
             },
             { name: "category", in: "query", schema: { type: "string" } },
             { name: "page", in: "query", schema: { type: "integer" } },
@@ -2522,10 +2725,15 @@ function getOpenApiSpec() {
           requestBody: {
             required: true,
             content: {
-              "application/json": { schema: { $ref: "#/components/schemas/FinanceExpenseBody" } },
+              "application/json": {
+                schema: { $ref: "#/components/schemas/FinanceExpenseBody" },
+              },
             },
           },
-          responses: { 201: { description: "Created" }, 400: { description: "Bad request" } },
+          responses: {
+            201: { description: "Created" },
+            400: { description: "Bad request" },
+          },
         },
       },
       "/finance/expenses/{id}": {
@@ -2534,7 +2742,10 @@ function getOpenApiSpec() {
           security: [{ bearerAuth: [] }],
           summary: "Chi tiết phiếu chi",
           parameters: [objectIdParam("id", "FinanceExpense ID")],
-          responses: { 200: { description: "OK" }, 404: { description: "Not found" } },
+          responses: {
+            200: { description: "OK" },
+            404: { description: "Not found" },
+          },
         },
         patch: {
           tags: ["Finance"],
@@ -2543,7 +2754,9 @@ function getOpenApiSpec() {
           parameters: [objectIdParam("id", "FinanceExpense ID")],
           requestBody: {
             content: {
-              "application/json": { schema: { $ref: "#/components/schemas/FinanceExpenseBody" } },
+              "application/json": {
+                schema: { $ref: "#/components/schemas/FinanceExpenseBody" },
+              },
             },
           },
           responses: { 200: { description: "OK" } },
@@ -2555,7 +2768,9 @@ function getOpenApiSpec() {
           parameters: [objectIdParam("id", "FinanceExpense ID")],
           requestBody: {
             content: {
-              "application/json": { schema: { $ref: "#/components/schemas/VoidExpenseBody" } },
+              "application/json": {
+                schema: { $ref: "#/components/schemas/VoidExpenseBody" },
+              },
             },
           },
           responses: { 200: { description: "OK" } },
@@ -2602,7 +2817,12 @@ function getOpenApiSpec() {
             {
               name: "pageSize",
               in: "query",
-              schema: { type: "integer", minimum: 1, maximum: 100, default: 10 },
+              schema: {
+                type: "integer",
+                minimum: 1,
+                maximum: 100,
+                default: 10,
+              },
             },
           ],
           responses: { 200: { description: "OK" } },
@@ -2754,7 +2974,9 @@ function getOpenApiSpec() {
           },
           responses: {
             200: { description: "OK" },
-            400: { description: "Phiếu đã nhận hàng / hoàn tất, không hủy được" },
+            400: {
+              description: "Phiếu đã nhận hàng / hoàn tất, không hủy được",
+            },
           },
         },
       },
@@ -2826,7 +3048,11 @@ function getOpenApiSpec() {
               },
             },
             { name: "ref_id", in: "query", schema: { type: "string" } },
-            { name: "page", in: "query", schema: { type: "integer", default: 1 } },
+            {
+              name: "page",
+              in: "query",
+              schema: { type: "integer", default: 1 },
+            },
             {
               name: "pageSize",
               in: "query",
